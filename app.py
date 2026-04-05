@@ -618,13 +618,13 @@ with st.sidebar:
         help="Extract and compare skills between JD and resumes"
     )
     
-    mode = st.radio(
-        "Analysis Mode", 
-        ["🧠 Smart (Best Results)", "⚡ Fast (Cheap)"],
-        index=1,
-        help="Smart uses AI for explanations. Fast skips AI to save cost."
-    )
-    cheap_mode = (mode == "⚡ Fast (Cheap)")
+    st.markdown("### 🤖 Analysis Mode")
+    if usage < 2:
+        cheap_mode = False
+        st.success("✨ Premium AI Analysis (Free Trial)")
+    else:
+        cheap_mode = True
+        st.warning("⚡ Fast Mode (Upgrade for Premium AI)")
     
     if cheap_mode:
         st.markdown("""
