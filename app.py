@@ -801,9 +801,11 @@ if "results" not in st.session_state or not st.session_state["results"]:
                 
                 skills = None
                 s_score = 50.0
-                if enable_skills:
+                if enable_skills and not cheap_mode:
                     skills = extract_skills_analysis(job_text, resume_text)
                     s_score = compute_skill_score(skills)
+                else:
+                    skills = {"matched_skills": [], "missing_skills": [], "extra_skills": []}
                 
                 if cheap_mode:
                     l_score = 50.0
