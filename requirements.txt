@@ -1,0 +1,13 @@
+streamlit==1.45.1
+pdfplumber==0.11.6
+sentence-transformers==4.1.0
+scikit-learn==1.6.1
+openai==1.76.0
+requests==2.32.3
+torch==2.2.2
+numpy==2.2.4
+
+pandas
+
+supabase
+python-dotenv
