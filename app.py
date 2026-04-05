@@ -540,7 +540,16 @@ with st.sidebar:
     
     if usage >= limit:
         st.warning("⚠️ Free limit reached")
-        st.button("🚀 Upgrade for unlimited analysis", use_container_width=True)
+        st.markdown(
+            """
+            <a href="https://your-store.lemonsqueezy.com/checkout/buy/xxxxx" target="_blank" style="text-decoration:none;">
+                <button style="width:100%;padding:10px;border-radius:12px;background:linear-gradient(135deg, #6366f1, #4f46e5);color:white;font-weight:700;border:none;cursor:pointer;transition:all 0.3s ease;">
+                    🚀 Upgrade to Pro
+                </button>
+            </a>
+            """,
+            unsafe_allow_html=True
+        )
     
     st.markdown("---")
     st.markdown("### ⚙️ Configuration")
