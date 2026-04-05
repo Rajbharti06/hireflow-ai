@@ -534,7 +534,7 @@ margin-right: -3rem;
 with st.sidebar:
     st.markdown("### ⚡ Usage")
     usage = len(st.session_state.get("results", []))
-    limit = 5
+    limit = 3
     st.progress(min(usage / limit, 1.0))
     st.caption(f"{usage}/{limit} candidates analyzed")
     
