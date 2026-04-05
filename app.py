@@ -534,9 +534,13 @@ margin-right: -3rem;
 with st.sidebar:
     st.markdown("### ⚡ Usage")
     usage = len(st.session_state.get("results", []))
-    limit = 100
+    limit = 5
     st.progress(min(usage / limit, 1.0))
     st.caption(f"{usage}/{limit} candidates analyzed")
+    
+    if usage >= limit:
+        st.warning("⚠️ Free limit reached")
+        st.button("🚀 Upgrade for unlimited analysis", use_container_width=True)
     
     st.markdown("---")
     st.markdown("### ⚙️ Configuration")
@@ -608,6 +612,7 @@ with st.sidebar:
     mode = st.radio(
         "Analysis Mode", 
         ["🧠 Smart (Best Results)", "⚡ Fast (Cheap)"],
+        index=1,
         help="Smart uses AI for explanations. Fast skips AI to save cost."
     )
     cheap_mode = (mode == "⚡ Fast (Cheap)")
@@ -728,7 +733,7 @@ if "results" not in st.session_state or not st.session_state["results"]:
     if job_file and resume_files:
         mode_label = "⚡ Quick Analyze" if cheap_mode else "🚀 Analyze Candidates"
         
-        if st.button(mode_label, use_container_width=True):
+        if st.button(mode_label, use_container_width=True, disabled=(usage >= limit)):
             
             # ── Processing Pipeline ──
             with st.spinner(""):
