@@ -20,6 +20,7 @@ os.environ["USE_TORCH"] = "1"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import streamlit as st
+import streamlit.components.v1 as components
 import time
 import pandas as pd
 from parser import extract_text_from_pdf
@@ -477,6 +478,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ─── OAuth Interceptor ────────────────────────────────────────────────────────
+if supabase is not None:
+    # 1. Listen for OAuth hash in browser and push to query params
+    oauth_js = """
+    <script>
+        if (window.location.hash.includes("access_token")) {
+            const hash = window.location.hash.substring(1);
+            const params = new URLSearchParams(hash);
+            const accessToken = params.get('access_token');
+            const refreshToken = params.get('refresh_token');
+            if (accessToken) {
+                window.location.href = window.location.origin + window.location.pathname + '?access_token=' + accessToken + '&refresh_token=' + refreshToken;
+            }
+        }
+    </script>
+    """
+    components.html(oauth_js, height=0, width=0)
+
+    # 2. Process query params from the redirect
+    query_params = st.query_params
+    if "access_token" in query_params and "refresh_token" in query_params:
+        try:
+            res = supabase.auth.set_session(query_params["access_token"], query_params["refresh_token"])
+            st.session_state.user = res.user
+            st.query_params.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"OAuth Authentication Failed: {str(e)}")
+
+
 # ─── Auth Guard ───────────────────────────────────────────────────────────────
 if supabase is not None and "user" not in st.session_state:
     st.markdown("<h2 style='text-align: center; color: white; margin-top: 5rem;'>Login to Resume AI</h2>", unsafe_allow_html=True)
@@ -494,14 +525,42 @@ if supabase is not None and "user" not in st.session_state:
                     st.session_state.user = res.user
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Login failed: {str(e)}")
+                    msg = str(e)
+                    if "Email not confirmed" in msg:
+                        st.error("Login failed: Please confirm your email address first.")
+                    elif "Invalid login credentials" in msg:
+                        st.error("Login failed: Incorrect email or password.")
+                    else:
+                        st.error(f"Login failed: {msg}")
         with c2:
             if st.button("Sign Up", use_container_width=True):
                 try:
                     res = supabase.auth.sign_up({"email": email, "password": password})
-                    st.success("Check your email for confirmation (or login if email confirmation is disabled).")
+                    # Try to log in immediately if email confirmation is disabled
+                    try:
+                        res_login = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                        st.session_state.user = res_login.user
+                        st.rerun()
+                    except Exception:
+                        st.success("Sign up successful! Please check your email inbox to confirm your account.")
                 except Exception as e:
                     st.error(f"Signup failed: {str(e)}")
+
+        st.markdown("<hr style='border:1px solid rgba(255,255,255,0.1); margin: 2rem 0;'/>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#8b949e;'>Or continue with</p>", unsafe_allow_html=True)
+        
+        # Single Sign-On Buttons
+        google_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=google"
+        github_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=github"
+        
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown(f'<a href="{google_url}" target="_self" style="display:block; text-align:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;"><img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="16" style="margin-right:8px; vertical-align:middle;">Google</a>', unsafe_allow_html=True)
+        with c4:
+            st.markdown(f'<a href="{github_url}" target="_self" style="display:block; text-align:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;"><img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" width="16" style="filter:invert(1); margin-right:8px; vertical-align:middle;">GitHub</a>', unsafe_allow_html=True)
+            
+        st.markdown("<p style='text-align:center; margin-top:20px; font-size:12px; color:#8b949e;'><em>For OAuth to work, ensure you enabled Google/GitHub in your Supabase Auth settings.</em></p>", unsafe_allow_html=True)
+        
     st.stop()
 elif supabase is None:
     pass
