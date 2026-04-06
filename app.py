@@ -553,13 +553,17 @@ if supabase is not None and "user" not in st.session_state:
         google_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=google"
         github_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=github"
         
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown(f'<a href="{google_url}" target="_self" style="display:block; text-align:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;"><img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="16" style="margin-right:8px; vertical-align:middle;">Google</a>', unsafe_allow_html=True)
-        with c4:
-            st.markdown(f'<a href="{github_url}" target="_self" style="display:block; text-align:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;"><img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" width="16" style="filter:invert(1); margin-right:8px; vertical-align:middle;">GitHub</a>', unsafe_allow_html=True)
-            
-        st.markdown("<p style='text-align:center; margin-top:20px; font-size:12px; color:#8b949e;'><em>For OAuth to work, ensure you enabled Google/GitHub in your Supabase Auth settings.</em></p>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="display: flex; gap: 10px; justify-content: center; margin-bottom: 20px;">
+            <a href="{google_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="16" style="margin-right:8px;">Google
+            </a>
+            <a href="{github_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;">
+                <img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" width="16" style="filter:invert(1); margin-right:8px;">GitHub
+            </a>
+        </div>
+        <p style='text-align:center; font-size:12px; color:#8b949e;'><em>For OAuth to work, ensure you enabled Google/GitHub in your Supabase Auth settings.</em></p>
+        """, unsafe_allow_html=True)
         
     st.stop()
 elif supabase is None:
