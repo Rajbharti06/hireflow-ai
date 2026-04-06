@@ -338,7 +338,7 @@ def _call_nvidia(prompt: str) -> str:
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "meta/llama3-70b-instruct",
+                "model": "google/gemma-4-31b-it",
                 "messages": [
                     {"role": "system", "content": "You are a concise, expert recruitment analyst."},
                     {"role": "user", "content": prompt}

@@ -8,9 +8,10 @@ load_dotenv()
 url: str = os.getenv("SUPABASE_URL", "")
 key: str = os.getenv("SUPABASE_ANON_KEY", "")
 
-# Initialize client only if keys are present
-if url and key:
-    supabase: Client = create_client(url, key)
-else:
-    # We will let it fail gracefully or mock if missing keys during initial setup
+try:
+    if url and key and url.startswith("http"):
+        supabase: Client = create_client(url, key)
+    else:
+        supabase = None
+except Exception:
     supabase = None

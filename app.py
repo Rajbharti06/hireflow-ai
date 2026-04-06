@@ -14,8 +14,12 @@ Pipeline: PDF → Text → Batch Embed → Skills Extract → LLM Score → Hybr
 Run: streamlit run app.py
 """
 
-import streamlit as st
 import os
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+import streamlit as st
 import time
 import pandas as pd
 from parser import extract_text_from_pdf
@@ -500,7 +504,7 @@ if supabase is not None and "user" not in st.session_state:
                     st.error(f"Signup failed: {str(e)}")
     st.stop()
 elif supabase is None:
-    st.warning("⚠️ Supabase not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to .env to enable Auth.")
+    pass
 
 
 # ─── Top Navigation Bar ───────────────────────────────────────────────────────
@@ -555,60 +559,7 @@ with st.sidebar:
     st.markdown("### ⚙️ Configuration")
     st.markdown("---")
     
-    # ── AI Provider Selector ──
-    provider_options = [
-        "OpenAI",
-        "Claude",
-        "Gemini",
-        "Perplexity",
-        "Grok",
-        "NVIDIA",
-        "Ollama (Local)"
-    ]
-    
-    # Try to map the env var to the right index, default to 0 (OpenAI)
-    current_backend = os.environ.get("AI_BACKEND", "openai").lower()
-    default_index = 0
-    for i, opt in enumerate(provider_options):
-        if current_backend.startswith(opt.split()[0].lower()):
-            default_index = i
-            break
-            
-    backend = st.selectbox(
-        "AI Provider",
-        provider_options,
-        index=default_index,
-        help="Select the AI provider to use for explanations and judgments."
-    )
-    
-    # ── API Key Inputs ──
-    if backend != "Ollama (Local)":
-        st.warning("⚠️ API usage may incur costs depending on provider.")
-        api_key = st.text_input("API Key", type="password", help=f"Enter your {backend} API key")
-        
-        if api_key:
-            if backend == "OpenAI":
-                os.environ["OPENAI_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "openai"
-            elif backend == "Claude":
-                os.environ["ANTHROPIC_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "claude"
-            elif backend == "Gemini":
-                os.environ["GEMINI_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "gemini"
-            elif backend == "Perplexity":
-                os.environ["PPLX_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "perplexity"
-            elif backend == "Grok":
-                os.environ["GROK_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "grok"
-            elif backend == "NVIDIA":
-                os.environ["NVIDIA_API_KEY"] = api_key
-                os.environ["AI_BACKEND"] = "nvidia"
-    else:
-        st.success("✅ Running locally — zero cost")
-        os.environ["AI_BACKEND"] = "ollama"
-        st.info("Make sure Ollama is running locally with `ollama serve`")
+    # AI Provider configuration is exclusively managed by environment variables.
     
     st.markdown("---")
     
@@ -686,19 +637,6 @@ if not st.session_state.get("results"):
         <p style="text-align:center; color:#8b949e; margin-top:0.5rem; font-size:1.05rem;">
         Screen 100+ candidates in seconds using AI — with explainable scoring.
         </p>
-        <div style="
-        display:inline-block;
-        padding:6px 14px;
-        border-radius:20px;
-        background:rgba(212,175,55,0.1);
-        border:1px solid rgba(212,175,55,0.3);
-        color:#d4af37;
-        font-size:12px;
-        font-weight:600;
-        margin-top:0.5rem;
-        ">
-        ⚡ Powered by {backend}
-        </div>
     </div>
     """, unsafe_allow_html=True)
 

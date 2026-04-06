@@ -30,13 +30,15 @@ def save_job(job_id: str, text: str, filename: str):
 
 
 def get_sessions(limit=10):
+    if not supabase:
+        return []
     user_id = get_user_id()
 
-    res = supabase.table("jobs") \\
-        .select("*") \\
-        .eq("user_id", user_id) \\
-        .order("created_at", desc=True) \\
-        .limit(limit) \\
+    res = supabase.table("jobs") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .order("created_at", desc=True) \
+        .limit(limit) \
         .execute()
 
     return res.data
