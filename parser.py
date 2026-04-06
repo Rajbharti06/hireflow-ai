@@ -22,6 +22,8 @@ def extract_text_from_pdf(file) -> str:
     text = ""
     try:
         with pdfplumber.open(file) as pdf:
+            if len(pdf.pages) > 15:
+                raise ValueError("Security Guard: PDF exceeds the 15-page limit per document.")
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:

@@ -7,7 +7,7 @@ requests==2.32.3
 torch==2.2.2
 numpy==1.26.4
 
-pandas
+pandas==2.2.2
 
-supabase
-python-dotenv
+supabase==2.3.4
+python-dotenv==1.0.1

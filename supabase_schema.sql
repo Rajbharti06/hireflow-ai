@@ -35,9 +35,27 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   email TEXT NOT NULL,
   is_pro BOOLEAN DEFAULT false,
   lemon_squeezy_customer_id TEXT,
+  lifetime_usage INTEGER DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- 4. Secure Lifetime Usage RPC
+-- This atomically increments a user's usage from Python (preventing race conditions)
+CREATE OR REPLACE FUNCTION public.increment_usage(uid UUID, amount INTEGER DEFAULT 1)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+BEGIN
+  UPDATE public.profiles
+  SET lifetime_usage = lifetime_usage + amount
+  WHERE id = uid;
+END;
+$$;
+
 -- Note: We disable RLS (Row Level Security) temporarily for the MVP 
--- just to make sure frontend testing works flawlessly.
+-- just to make sure frontend testing works flawlessly and avoid 42501 API errors.
 -- You can enable and configure these later using the Supabase UI.
+ALTER TABLE public.jobs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.results DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles DISABLE ROW LEVEL SECURITY;

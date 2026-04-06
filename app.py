@@ -37,9 +37,13 @@ from explainer import (
 from utils import extract_candidate_name, get_initials
 from database import (
     create_session, save_job, save_result,
-    get_sessions, get_results_for_session, delete_session
+    get_sessions, get_results_for_session, delete_session,
+    get_user_profile, get_total_usage
 )
 from supabase_client import supabase
+
+if "results" not in st.session_state:
+    st.session_state["results"] = []
 
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -502,7 +506,10 @@ if supabase is not None:
         try:
             res = supabase.auth.set_session(query_params["access_token"], query_params["refresh_token"])
             st.session_state.user = res.user
-            st.query_params.clear()
+            if hasattr(st, "experimental_set_query_params"):
+                st.experimental_set_query_params()
+            else:
+                st.query_params.clear()
             st.rerun()
         except Exception as e:
             st.error(f"OAuth Authentication Failed: {str(e)}")
@@ -600,23 +607,29 @@ margin-right: -3rem;
 # ─── Sidebar Config ──────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚡ Usage")
-    usage = len(st.session_state.get("results", []))
-    limit = 3
-    st.progress(min(usage / limit, 1.0))
-    st.caption(f"{usage}/{limit} candidates analyzed")
+    total_usage = get_total_usage()
+    profile = get_user_profile()
+    is_pro = profile.get("is_pro", False) if profile else False
     
-    if usage >= limit:
-        st.warning("⚠️ Free limit reached")
-        st.markdown(
-            """
-            <a href="https://your-store.lemonsqueezy.com/checkout/buy/xxxxx" target="_blank" style="text-decoration:none;">
-                <button style="width:100%;padding:10px;border-radius:12px;background:linear-gradient(135deg, #6366f1, #4f46e5);color:white;font-weight:700;border:none;cursor:pointer;transition:all 0.3s ease;">
-                    🚀 Upgrade to Pro
-                </button>
-            </a>
-            """,
-            unsafe_allow_html=True
-        )
+    limit = 400 if is_pro else 3
+    st.progress(min(total_usage / limit, 1.0))
+    st.caption(f"{limit - total_usage} AI-powered evaluations remaining")
+    
+    if total_usage >= limit:
+        if is_pro:
+            st.warning("⚠️ Pro monthly limit reached.")
+        else:
+            st.warning("⚠️ Free limit reached")
+            st.markdown(
+                """
+                <a href="https://your-store.lemonsqueezy.com/checkout/buy/xxxxx" target="_blank" style="text-decoration:none;">
+                    <button style="width:100%;padding:10px;border-radius:12px;background:linear-gradient(135deg, #6366f1, #4f46e5);color:white;font-weight:700;border:none;cursor:pointer;transition:all 0.3s ease;">
+                        🚀 Upgrade to Pro
+                    </button>
+                </a>
+                """,
+                unsafe_allow_html=True
+            )
     
     st.markdown("---")
     st.markdown("### ⚙️ Configuration")
@@ -633,32 +646,24 @@ with st.sidebar:
     )
     
     st.markdown("### 🤖 Analysis Mode")
-    remaining_premium = max(0, 2 - usage)
-    if usage < 2:
+    premium_limit = 5 if is_pro else 2
+    remaining_premium = max(0, premium_limit - total_usage)
+    if total_usage < premium_limit:
         cheap_mode = False
         st.success(f"✨ Premium AI — {remaining_premium} premium left")
         st.markdown("""
         <div class="mode-badge mode-full">PREMIUM</div>
         <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
-        Gemma 31B explanations • DeepSeek skill extraction • LLM scoring
-        </p>
-        """, unsafe_allow_html=True)
-    elif usage < 3:
-        cheap_mode = True
-        st.info("🔄 Smart Mode — Skills AI active")
-        st.markdown("""
-        <div class="mode-badge mode-cheap">SMART</div>
-        <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
-        DeepSeek skills analysis active. Upgrade for premium AI explanations.
+        Gemma 31B explanations & DeepSeek skill extraction
         </p>
         """, unsafe_allow_html=True)
     else:
         cheap_mode = True
-        st.warning("⚡ Fast Mode — Upgrade for AI")
+        st.info("🔄 Smart Mode active")
         st.markdown("""
-        <div class="mode-badge mode-cheap">FAST</div>
+        <div class="mode-badge mode-cheap">SMART</div>
         <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
-        Embedding scoring only. Zero AI costs.
+        Fast structured extraction. AI reasoning disabled to save cost.
         </p>
         """, unsafe_allow_html=True)
     
@@ -754,14 +759,21 @@ if "results" not in st.session_state or not st.session_state["results"]:
     st.markdown("<br>", unsafe_allow_html=True)
 
     if job_file and resume_files:
+        MAX_BATCH = 20
+        if len(resume_files) > MAX_BATCH:
+            st.error(f"⚠️ Maximum {MAX_BATCH} resumes allowed per batch to prevent API overload.")
+            st.stop()
+            
         mode_label = "⚡ Quick Analyze" if cheap_mode else "🚀 Analyze Candidates"
         
-        if st.button(mode_label, use_container_width=True, disabled=(usage >= limit)):
+        if st.button(mode_label, use_container_width=True, disabled=(total_usage >= limit)):
             
             # ── Processing Pipeline ──
             with st.spinner(""):
                 st.markdown('<p class="processing-text">📋 Parsing job description...</p>', unsafe_allow_html=True)
                 try:
+                    if job_file.size > 5 * 1024 * 1024:
+                        raise ValueError("Security Guard: Job description file exceeds the 5MB maximum limit.")
                     job_text = extract_text_from_pdf(job_file)
                 except ValueError as e:
                     st.error(str(e))
@@ -778,9 +790,18 @@ if "results" not in st.session_state or not st.session_state["results"]:
             resume_filenames = []
             parse_errors = []
             
+            remaining = limit - total_usage
+            if remaining <= 0:
+                st.warning("⚠️ Limit reached. Cannot process more resumes.")
+                st.stop()
+                
+            resume_files = resume_files[:remaining]
+            
             for resume_file in resume_files:
                 candidate_name = extract_candidate_name(resume_file.name)
                 try:
+                    if resume_file.size > 5 * 1024 * 1024:
+                        raise ValueError("Security Guard: Resume file exceeds the 5MB maximum limit.")
                     text = extract_text_from_pdf(resume_file)
                     resume_texts.append(text)
                     resume_names.append(candidate_name)
@@ -806,57 +827,75 @@ if "results" not in st.session_state or not st.session_state["results"]:
                 zip(resume_texts, resume_embeddings, resume_names, resume_filenames)
             ):
                 progress = (i + 1) / len(resume_texts)
-                # ── Determine cost tier for this resume ──
-                current_usage = usage + i
-                if current_usage < 2:
-                    tier = "premium"     # Gemma 31B + DeepSeek + full scoring
-                elif current_usage < 3:
-                    tier = "transition"  # DeepSeek skills + cheap explanation
-                else:
-                    tier = "locked"      # Pure embedding, zero API calls
                 
-                tier_labels = {"premium": "✨ Premium", "transition": "🔄 Smart", "locked": "⚡ Fast"}
+                from database import get_total_usage, increment_user_usage
+                current_usage = get_total_usage()
+                
+                if current_usage >= limit:
+                    st.warning(f"⚠️ Limit of {limit} reached. Skipped remaining candidates.")
+                    break
+                    
+                premium_limit = 5 if is_pro else 2
+                
+                if current_usage < premium_limit:
+                    tier = "premium"     # Gemma 31B + DeepSeek + full scoring
+                else:
+                    tier = "transition"  # DeepSeek skills + cheap explanation
+                
+                tier_labels = {"premium": "✨ Premium", "transition": "🔄 Smart"}
                 status_text.markdown(
-                    f'<p class="processing-text">🔍 {tier_labels[tier]} | Scoring {name} ({i+1}/{len(resume_texts)})...</p>',
+                    f'<p class="processing-text">🔍 {tier_labels.get(tier, "⚡ Fast")} | Scoring {name} ({i+1}/{len(resume_texts)})...</p>',
                     unsafe_allow_html=True
                 )
                 
-                emb_score = compute_embedding_score(job_emb, resume_emb)
-                
-                # ── Skills extraction (DeepSeek V3.2 — premium/transition) ──
-                skills = None
-                s_score = 50.0
-                if enable_skills and tier in ("premium", "transition"):
-                    skills = extract_skills_analysis(job_text, resume_text)
-                    s_score = compute_skill_score(skills)
-                else:
-                    skills = {"matched_skills": [], "missing_skills": [], "extra_skills": []}
-                
-                # ── LLM confidence score (Gemma 31B — premium only) ──
-                if tier == "premium":
-                    l_score = get_llm_score(job_text, resume_text)
-                else:
-                    l_score = 50.0
-                
-                final_score = compute_hybrid_score(emb_score, s_score, l_score)
-                
-                # ── AI Explanation (Gemma 31B — premium only) ──
-                if tier == "premium":
-                    explanation = generate_explanation(job_text, resume_text, final_score)
-                else:
-                    explanation = generate_cheap_explanation(final_score, skills)
-                
-                results.append({
-                    "name": name,
-                    "filename": filename,
-                    "score": final_score,
-                    "embedding_score": emb_score,
-                    "skill_score": s_score,
-                    "llm_score": l_score,
-                    "explanation": explanation,
-                    "skills": skills,
-                    "tier": tier
-                })
+                try:
+                    emb_score = compute_embedding_score(job_emb, resume_emb)
+                    
+                    # ── Skills extraction (DeepSeek V3.2 — premium/transition) ──
+                    skills = None
+                    s_score = 50.0
+                    if enable_skills and tier in ("premium", "transition"):
+                        skills = extract_skills_analysis(job_text, resume_text)
+                        s_score = compute_skill_score(skills)
+                    else:
+                        skills = {"matched_skills": [], "missing_skills": [], "extra_skills": []}
+                    
+                    # ── LLM confidence score (Gemma 31B — premium only) ──
+                    if tier == "premium":
+                        l_score = get_llm_score(job_text, resume_text)
+                    else:
+                        l_score = 50.0
+                    
+                    final_score = compute_hybrid_score(emb_score, s_score, l_score)
+                    
+                    # ── AI Explanation (Gemma 31B — premium only) ──
+                    if tier == "premium":
+                        explanation = generate_explanation(job_text, resume_text, final_score)
+                    else:
+                        explanation = generate_cheap_explanation(final_score, skills)
+                    
+                    results.append({
+                        "name": name,
+                        "filename": filename,
+                        "score": final_score,
+                        "embedding_score": emb_score,
+                        "skill_score": s_score,
+                        "llm_score": l_score,
+                        "explanation": explanation,
+                        "skills": skills,
+                        "tier": tier
+                    })
+                    
+                    increment_user_usage(1)
+                    
+                except Exception as e:
+                    parse_errors.append({
+                        "name": name,
+                        "filename": filename,
+                        "error": f"AI Pipeline Error: {str(e)}"
+                    })
+                    st.toast(f"⚠️ Failed to process {name}")
+                    continue
                 
                 progress_bar.progress(progress)
             
@@ -894,6 +933,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
             st.session_state["results"] = results
             st.session_state["view_mode"] = "new"
             st.session_state["job_name"] = job_name
+            st.success("⚡ Top candidates identified instantly")
+            time.sleep(1)
             st.rerun()
 
     elif not job_file:
