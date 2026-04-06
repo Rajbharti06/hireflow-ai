@@ -633,19 +633,32 @@ with st.sidebar:
     )
     
     st.markdown("### 🤖 Analysis Mode")
+    remaining_premium = max(0, 2 - usage)
     if usage < 2:
         cheap_mode = False
-        st.success("✨ Premium AI Analysis (Free Trial)")
+        st.success(f"✨ Premium AI — {remaining_premium} premium left")
+        st.markdown("""
+        <div class="mode-badge mode-full">PREMIUM</div>
+        <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
+        Gemma 31B explanations • DeepSeek skill extraction • LLM scoring
+        </p>
+        """, unsafe_allow_html=True)
+    elif usage < 3:
+        cheap_mode = True
+        st.info("🔄 Smart Mode — Skills AI active")
+        st.markdown("""
+        <div class="mode-badge mode-cheap">SMART</div>
+        <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
+        DeepSeek skills analysis active. Upgrade for premium AI explanations.
+        </p>
+        """, unsafe_allow_html=True)
     else:
         cheap_mode = True
-        st.warning("⚡ Fast Mode (Upgrade for Premium AI)")
-    
-    if cheap_mode:
+        st.warning("⚡ Fast Mode — Upgrade for AI")
         st.markdown("""
-        <div class="mode-badge mode-cheap">FAST MODE</div>
+        <div class="mode-badge mode-cheap">FAST</div>
         <p style="font-size: 0.75rem; color: #6e7681; margin-top: 4px;">
-        Skips AI explanations. Uses skills + embedding scoring only.
-        LLM score defaults to 50 (neutral).
+        Embedding scoring only. Zero AI costs.
         </p>
         """, unsafe_allow_html=True)
     
@@ -755,7 +768,7 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     st.stop()
                 
                 st.markdown('<p class="processing-text">🧠 Understanding job requirements...</p>', unsafe_allow_html=True)
-                job_emb = get_embedding(job_text)
+                job_emb = get_embedding(job_text, input_type="query")
             
             status_text = st.empty()
             status_text.markdown('<p class="processing-text">📄 Parsing resumes...</p>', unsafe_allow_html=True)
@@ -793,32 +806,45 @@ if "results" not in st.session_state or not st.session_state["results"]:
                 zip(resume_texts, resume_embeddings, resume_names, resume_filenames)
             ):
                 progress = (i + 1) / len(resume_texts)
+                # ── Determine cost tier for this resume ──
+                current_usage = usage + i
+                if current_usage < 2:
+                    tier = "premium"     # Gemma 31B + DeepSeek + full scoring
+                elif current_usage < 3:
+                    tier = "transition"  # DeepSeek skills + cheap explanation
+                else:
+                    tier = "locked"      # Pure embedding, zero API calls
+                
+                tier_labels = {"premium": "✨ Premium", "transition": "🔄 Smart", "locked": "⚡ Fast"}
                 status_text.markdown(
-                    f'<p class="processing-text">🔍 Scoring {name} ({i+1}/{len(resume_texts)})...</p>',
+                    f'<p class="processing-text">🔍 {tier_labels[tier]} | Scoring {name} ({i+1}/{len(resume_texts)})...</p>',
                     unsafe_allow_html=True
                 )
                 
                 emb_score = compute_embedding_score(job_emb, resume_emb)
                 
+                # ── Skills extraction (DeepSeek V3.2 — premium/transition) ──
                 skills = None
                 s_score = 50.0
-                if enable_skills and not cheap_mode:
+                if enable_skills and tier in ("premium", "transition"):
                     skills = extract_skills_analysis(job_text, resume_text)
                     s_score = compute_skill_score(skills)
                 else:
                     skills = {"matched_skills": [], "missing_skills": [], "extra_skills": []}
                 
-                if cheap_mode:
-                    l_score = 50.0
-                else:
+                # ── LLM confidence score (Gemma 31B — premium only) ──
+                if tier == "premium":
                     l_score = get_llm_score(job_text, resume_text)
+                else:
+                    l_score = 50.0
                 
                 final_score = compute_hybrid_score(emb_score, s_score, l_score)
                 
-                if cheap_mode:
-                    explanation = generate_cheap_explanation(final_score, skills)
-                else:
+                # ── AI Explanation (Gemma 31B — premium only) ──
+                if tier == "premium":
                     explanation = generate_explanation(job_text, resume_text, final_score)
+                else:
+                    explanation = generate_cheap_explanation(final_score, skills)
                 
                 results.append({
                     "name": name,
@@ -828,7 +854,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     "skill_score": s_score,
                     "llm_score": l_score,
                     "explanation": explanation,
-                    "skills": skills
+                    "skills": skills,
+                    "tier": tier
                 })
                 
                 progress_bar.progress(progress)

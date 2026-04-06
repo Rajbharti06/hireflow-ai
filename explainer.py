@@ -92,7 +92,13 @@ def extract_skills_analysis(job_desc: str, resume_text: str) -> dict:
             pass
     
     prompt = _build_skills_prompt(job_desc, resume_text)
-    response = _route_call(prompt)
+    
+    # Route skills extraction through DeepSeek V3.2 for better JSON output
+    backend = os.environ.get("AI_BACKEND", AI_BACKEND).lower()
+    if backend == "nvidia":
+        response = _call_nvidia_deepseek(prompt)
+    else:
+        response = _route_call(prompt)
     
     parsed = _parse_skills_json(response)
     _llm_cache[cache_k] = json.dumps(parsed)
@@ -329,28 +335,45 @@ def _call_grok(prompt: str) -> str:
         return f"⚠️ Grok error: {str(e)}"
 
 
-def _call_nvidia(prompt: str) -> str:
+def _call_nvidia_model(prompt: str, model: str, api_key: str) -> str:
+    """Generic NVIDIA NIM chat completion handler for any hosted model."""
     try:
-        api_key = os.environ.get("NVIDIA_API_KEY", "")
-        if not api_key: return "⚠️ Missing NVIDIA API Key"
+        if not api_key:
+            return f"⚠️ Missing NVIDIA API Key for {model}"
         
         response = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "google/gemma-4-31b-it",
+                "model": model,
                 "messages": [
                     {"role": "system", "content": "You are a concise, expert recruitment analyst."},
                     {"role": "user", "content": prompt}
                 ],
                 "max_tokens": 300,
                 "temperature": 0.3
-            }
+            },
+            timeout=60
         )
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return f"⚠️ NVIDIA error: {str(e)}"
+        return f"⚠️ NVIDIA {model} error: {str(e)}"
+
+
+def _call_nvidia(prompt: str) -> str:
+    """Gemma 4 31B — premium explanations and LLM scoring."""
+    api_key = os.environ.get("NVIDIA_API_KEY", "")
+    return _call_nvidia_model(prompt, "google/gemma-4-31b-it", api_key)
+
+
+def _call_nvidia_deepseek(prompt: str) -> str:
+    """DeepSeek V3.2 — structured JSON output and skills extraction."""
+    api_key = os.environ.get("NVIDIA_DEEPSEEK_API_KEY", "")
+    if not api_key:
+        # Fallback to Gemma if no DeepSeek key
+        return _call_nvidia(prompt)
+    return _call_nvidia_model(prompt, "deepseek-ai/deepseek-v3.2", api_key)
 
 
 def _call_ollama(prompt: str) -> str:
