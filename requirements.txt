@@ -4,10 +4,10 @@ sentence-transformers==4.1.0
 scikit-learn==1.6.1
 openai==1.76.0
 requests==2.32.3
+# torch 2.2.x is NOT compatible with numpy>=2.0 — keep numpy pinned below 2.0
 torch==2.2.2
-numpy==1.26.4
+numpy>=1.24.0,<2.0
 
 pandas==2.2.2
-
 supabase==2.3.4
 python-dotenv==1.0.1

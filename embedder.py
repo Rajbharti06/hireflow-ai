@@ -72,15 +72,25 @@ def _get_local_embedding(text: str) -> np.ndarray:
     max_chars = 10000
     if len(text) > max_chars:
         text = text[:max_chars]
-    return model.encode(text, convert_to_numpy=True)
+    # Use convert_to_tensor=True then .tolist() to avoid torch↔numpy ABI issues
+    # (torch 2.2.x and numpy 2.x are incompatible via .numpy(), but .tolist() always works)
+    import torch
+    with torch.no_grad():
+        embedding = model.encode(text, convert_to_tensor=True, normalize_embeddings=True)
+        return np.array(embedding.cpu().tolist(), dtype=np.float32)
 
 
 def _get_local_embeddings_batch(texts: list[str]) -> list[np.ndarray]:
     model = load_model()
     max_chars = 10000
     truncated = [t[:max_chars] if len(t) > max_chars else t for t in texts]
-    embeddings = model.encode(truncated, convert_to_numpy=True, show_progress_bar=False)
-    return list(embeddings)
+    import torch
+    with torch.no_grad():
+        embeddings = model.encode(
+            truncated, convert_to_tensor=True,
+            normalize_embeddings=True, show_progress_bar=False
+        )
+        return [np.array(e.cpu().tolist(), dtype=np.float32) for e in embeddings]
 
 
 # ─── NVIDIA Backend (llama-nemotron-embed-1b-v2) ────────────────────────────

@@ -2,3 +2,11 @@
 *.db
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+error.log
+Untitled.txt
+generate_pdfs.py
+tmp_test_oauth.py
+.streamlit/secrets.toml

@@ -541,17 +541,20 @@ if supabase is not None and "user" not in st.session_state:
                         st.error(f"Login failed: {msg}")
         with c2:
             if st.button("Sign Up", use_container_width=True):
-                try:
-                    res = supabase.auth.sign_up({"email": email, "password": password})
-                    # Try to log in immediately if email confirmation is disabled
+                if len(password) < 8:
+                    st.error("Password must be at least 8 characters.")
+                else:
                     try:
-                        res_login = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                        st.session_state.user = res_login.user
-                        st.rerun()
-                    except Exception:
-                        st.success("Sign up successful! Please check your email inbox to confirm your account.")
-                except Exception as e:
-                    st.error(f"Signup failed: {str(e)}")
+                        res = supabase.auth.sign_up({"email": email, "password": password})
+                        # Try to log in immediately if email confirmation is disabled
+                        try:
+                            res_login = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                            st.session_state.user = res_login.user
+                            st.rerun()
+                        except Exception:
+                            st.success("Sign up successful! Please check your email inbox to confirm your account.")
+                    except Exception as e:
+                        st.error(f"Signup failed: {str(e)}")
 
         st.markdown("<hr style='border:1px solid rgba(255,255,255,0.1); margin: 2rem 0;'/>", unsafe_allow_html=True)
         st.markdown("<p style='text-align:center; color:#8b949e;'>Or continue with</p>", unsafe_allow_html=True)
@@ -574,7 +577,13 @@ if supabase is not None and "user" not in st.session_state:
         
     st.stop()
 elif supabase is None:
-    pass
+    # Running without Supabase — dev/local/open-source mode
+    st.sidebar.warning("⚠️ Running in local mode (no Supabase). Auth and usage tracking are disabled. Add SUPABASE_URL and SUPABASE_ANON_KEY to .env to enable them.")
+    # Inject a minimal session so downstream code that checks st.session_state.user doesn't crash
+    if "user" not in st.session_state:
+        import types
+        fake_user = types.SimpleNamespace(id="local-dev", email="local@dev")
+        st.session_state.user = fake_user
 
 
 # ─── Top Navigation Bar ───────────────────────────────────────────────────────
