@@ -31,8 +31,10 @@ from scorer import (
     get_score_label, get_score_color, compute_keyword_score
 )
 from skills_local import (
-    compare_skills_local, extract_years_experience, detect_education_level
+    compare_skills_local, extract_years_experience, detect_education_level,
+    compute_resume_quality_score
 )
+from interview_gen import generate_interview_questions, format_questions_markdown
 from explainer import (
     generate_explanation, extract_skills_analysis,
     get_llm_score, generate_cheap_explanation, AI_BACKEND
@@ -904,6 +906,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     else:
                         explanation = generate_cheap_explanation(final_score, skills, exp_years)
 
+                    quality = compute_resume_quality_score(resume_text)
+
                     results.append({
                         "name": name,
                         "filename": filename,
@@ -916,6 +920,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
                         "experience_years": exp_years,
                         "education": edu_label,
                         "tier": tier,
+                        "quality_score": quality,
+                        "resume_text": resume_text,
                     })
                     
                     increment_user_usage(1)
@@ -1023,6 +1029,72 @@ if "results" in st.session_state and st.session_state["results"]:
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Analytics Charts ──
+    try:
+        import plotly.graph_objects as go
+        import plotly.express as px
+
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            # Score distribution histogram
+            scores = [r["score"] for r in all_results]
+            bins = [0, 40, 60, 75, 90, 100]
+            bin_labels = ["Poor (<40)", "Weak (40-60)", "Moderate (60-75)", "Strong (75-90)", "Exceptional (90+)"]
+            bin_colors = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#10b981"]
+            counts = [0] * 5
+            for s in scores:
+                for i, (lo, hi) in enumerate(zip(bins[:-1], bins[1:])):
+                    if lo <= s < hi or (i == 4 and s >= 90):
+                        counts[i] += 1
+                        break
+
+            fig_dist = go.Figure(go.Bar(
+                x=bin_labels, y=counts,
+                marker_color=bin_colors,
+                text=counts, textposition="outside",
+            ))
+            fig_dist.update_layout(
+                title="Score Distribution",
+                paper_bgcolor="rgba(13,17,23,0)",
+                plot_bgcolor="rgba(13,17,23,0)",
+                font=dict(color="#8b949e", size=11),
+                title_font=dict(color="#e6edf3", size=13),
+                xaxis=dict(tickfont=dict(size=9), gridcolor="rgba(48,54,61,0.3)"),
+                yaxis=dict(gridcolor="rgba(48,54,61,0.3)"),
+                margin=dict(l=20, r=20, t=40, b=20),
+                height=240,
+            )
+            st.plotly_chart(fig_dist, use_container_width=True)
+
+        with chart_col2:
+            # Top 8 candidates: matched vs missing skills stacked bar
+            top8 = all_results[:8]
+            names8 = [r["name"].split()[0] for r in top8]
+            matched8 = [len(r["skills"].get("matched_skills", [])) if r.get("skills") else 0 for r in top8]
+            missing8 = [len(r["skills"].get("missing_skills", [])) if r.get("skills") else 0 for r in top8]
+
+            fig_skills = go.Figure()
+            fig_skills.add_trace(go.Bar(name="Matched", x=names8, y=matched8, marker_color="#22c55e"))
+            fig_skills.add_trace(go.Bar(name="Missing", x=names8, y=missing8, marker_color="#ef4444"))
+            fig_skills.update_layout(
+                title="Skills Coverage (Top 8)",
+                barmode="stack",
+                paper_bgcolor="rgba(13,17,23,0)",
+                plot_bgcolor="rgba(13,17,23,0)",
+                font=dict(color="#8b949e", size=11),
+                title_font=dict(color="#e6edf3", size=13),
+                xaxis=dict(tickfont=dict(size=9), gridcolor="rgba(48,54,61,0.3)"),
+                yaxis=dict(gridcolor="rgba(48,54,61,0.3)"),
+                legend=dict(font=dict(color="#8b949e", size=10), bgcolor="rgba(0,0,0,0)"),
+                margin=dict(l=20, r=20, t=40, b=20),
+                height=240,
+            )
+            st.plotly_chart(fig_skills, use_container_width=True)
+
+    except ImportError:
+        pass  # plotly not installed — skip charts silently
+
     # ── Comparison View (Top 3) ──
     st.markdown("<h3 style='color:#e6edf3; font-size:1.2rem; margin-top:20px;'>🏆 Top Candidates Comparison</h3>", unsafe_allow_html=True)
     top3 = all_results[:3]
@@ -1057,29 +1129,67 @@ if "results" in st.session_state and st.session_state["results"]:
     st.markdown("<hr style='border-color: rgba(99,102,241,0.2); margin: 25px 0;'>", unsafe_allow_html=True)
 
     # ── Quick Filters & Export Toolbar ──
-    tool_col1, tool_col2, tool_col3 = st.columns([2, 1.5, 1])
-    
+    search_query = st.text_input(
+        "🔎 Search candidates by name or skill",
+        placeholder="e.g. 'Python' or 'John'",
+        label_visibility="collapsed",
+        key="candidate_search"
+    )
+
+    tool_col1, tool_col2, tool_col3, tool_col4 = st.columns([2, 1.5, 1, 1])
+
     with tool_col1:
         min_score = st.slider("⚙️ Quick Filter: Minimum Score", 0, 100, 0, help="Drag to filter out lower-scoring candidates")
-        
+
     with tool_col2:
         st.markdown("<div style='margin-top:33px;'></div>", unsafe_allow_html=True)
         show_top = st.checkbox("🔥 Show Top Picks (≥70)")
 
     with tool_col3:
-        df = pd.DataFrame(all_results)
-        if 'skills' in df.columns:
-            df = df.drop(columns=['skills'])
+        df_export = pd.DataFrame([
+            {k: v for k, v in r.items() if k not in ("skills", "resume_text")}
+            for r in all_results
+        ])
         st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
         st.download_button(
-            "📥 Export to CSV",
-            df.to_csv(index=False),
+            "📥 CSV",
+            df_export.to_csv(index=False),
             "resume_results.csv",
             use_container_width=True
         )
 
-    # Apply filter
-    filtered_results = [r for r in all_results if r["score"] >= min_score]
+    with tool_col4:
+        # Build markdown report for all candidates
+        md_lines = [f"# Resume Screening Report — {job_name}\n"]
+        for r in all_results:
+            q = generate_interview_questions(
+                job_name, r.get("skills") or {}, r["score"],
+                r["name"], r.get("experience_years", 0)
+            )
+            md_lines.append(format_questions_markdown(q, r["name"], r["score"]))
+            md_lines.append("---\n")
+        st.markdown("<div style='margin-top:28px;'></div>", unsafe_allow_html=True)
+        st.download_button(
+            "📋 Report",
+            "\n".join(md_lines),
+            f"{job_name}_interview_report.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
+
+    # Apply search + score filter
+    filtered_results = all_results
+    if search_query:
+        q_lower = search_query.lower()
+        filtered_results = [
+            r for r in filtered_results
+            if q_lower in r["name"].lower()
+            or (r.get("skills") and any(
+                q_lower in s.lower()
+                for s in r["skills"].get("matched_skills", []) + r["skills"].get("extra_skills", [])
+            ))
+        ]
+    filtered_results = [r for r in filtered_results if r["score"] >= min_score]
     if show_top:
         filtered_results = [r for r in filtered_results if r["score"] >= 70]
     
@@ -1103,12 +1213,17 @@ if "results" in st.session_state and st.session_state["results"]:
 
         rank_class = f"rank-{absolute_rank}" if absolute_rank <= 3 else "rank-other"
 
-        # ── Meta badges: experience, education, analysis tier ──
+        quality_score = r.get("quality_score", 0)
+
+        # ── Meta badges: experience, education, resume quality, analysis tier ──
         meta_parts = []
         if exp_years:
             meta_parts.append(f'<span style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:#818cf8;font-weight:600;">💼 {exp_years}yr exp</span>')
         if edu_label and edu_label != "Not specified":
             meta_parts.append(f'<span style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.25);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:#4ade80;font-weight:600;">🎓 {edu_label}</span>')
+        if quality_score:
+            q_color = "#22c55e" if quality_score >= 70 else "#f59e0b" if quality_score >= 45 else "#ef4444"
+            meta_parts.append(f'<span style="background:rgba(34,197,94,0.08);border:1px solid {q_color}44;border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{q_color};font-weight:600;">📄 Resume {quality_score}/100</span>')
         tier_colors = {"premium": ("#f59e0b", "✨ Premium AI"), "transition": ("#818cf8", "🔄 Smart"), "local": ("#6e7681", "⚡ Local")}
         t_color, t_label = tier_colors.get(tier_used, ("#6e7681", "⚡ Local"))
         meta_parts.append(f'<span style="background:rgba(110,118,129,0.1);border:1px solid rgba(110,118,129,0.2);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{t_color};font-weight:600;">{t_label}</span>')
@@ -1206,6 +1321,45 @@ if "results" in st.session_state and st.session_state["results"]:
                     from database import toggle_shortlist
                     toggle_shortlist(r["id"], shortlisted)
                 r["shortlisted"] = shortlisted
+
+        # ── Interview Questions Expander ──
+        with st.expander(f"🎤 Interview Questions — {r['name']}", expanded=False):
+            interview_qs = generate_interview_questions(
+                job_name,
+                r.get("skills") or {},
+                r["score"],
+                r["name"],
+                r.get("experience_years", 0),
+            )
+            md_pack = format_questions_markdown(interview_qs, r["name"], r["score"])
+
+            # Render sections in clean columns
+            iq_col1, iq_col2 = st.columns(2)
+            sections_map = [
+                ("quick_screen", "⚡ Quick Screen"),
+                ("technical", "🔧 Technical Deep Dives"),
+                ("gap_probing", "🔍 Gap Probing"),
+                ("behavioral", "🧠 Behavioral (STAR)"),
+                ("culture_fit", "💡 Culture & Motivation"),
+            ]
+            for idx_s, (key, title) in enumerate(sections_map):
+                qs = interview_qs.get(key, [])
+                if not qs:
+                    continue
+                target_col = iq_col1 if idx_s % 2 == 0 else iq_col2
+                with target_col:
+                    st.markdown(f"**{title}**")
+                    for qi, q in enumerate(qs, 1):
+                        st.markdown(f"{qi}. {q}")
+                    st.markdown("")
+
+            st.download_button(
+                "⬇️ Download Interview Pack",
+                md_pack,
+                f"{r['name'].replace(' ', '_')}_interview_pack.md",
+                mime="text/markdown",
+                key=f"dl_iq_{absolute_rank}",
+            )
     
     # ── Footer Actions ──
     st.markdown("<br>", unsafe_allow_html=True)

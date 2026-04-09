@@ -197,3 +197,76 @@ def detect_education_level(text: str) -> tuple[int, str]:
         if any(kw in text_lower for kw in keywords):
             return level, label
     return 0, "Not specified"
+
+
+# ─── Resume Quality Scoring ───────────────────────────────────────────────────
+
+_CONTACT_PATTERNS = [
+    re.compile(r'[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}'),        # email
+    re.compile(r'\+?[\d\s\-().]{7,15}'),                  # phone
+    re.compile(r'linkedin\.com/', re.IGNORECASE),          # LinkedIn
+    re.compile(r'github\.com/', re.IGNORECASE),            # GitHub
+]
+
+_MEASURABLE_PATTERNS = re.compile(
+    r'\b(?:'
+    r'\d+%|increased|decreased|reduced|improved|grew|saved|generated|delivered'
+    r'|led\s+\w+\s+team|managed\s+team|managed\s+\d+|revenue|users|customers'
+    r'|latency|throughput|uptime|cost|budget|ROI'
+    r')\b',
+    re.IGNORECASE
+)
+
+_GOOD_LENGTH_MIN = 300   # chars — too short = incomplete
+_GOOD_LENGTH_MAX = 8000  # chars — too long = wall of text
+
+
+def compute_resume_quality_score(resume_text: str) -> int:
+    """
+    Score resume completeness and quality (0-100) using heuristic signals.
+
+    Checks:
+      - Contact info present (email, phone, LinkedIn/GitHub)  → up to 20 pts
+      - Summary/objective section present                      → 10 pts
+      - Experience section present                             → 20 pts
+      - Education section present                              → 10 pts
+      - Skills section present                                 → 10 pts
+      - Measurable results / quantified achievements           → up to 15 pts
+      - Reasonable length (not too short, not too long)        → 10 pts
+      - Reasonable skills count (≥5)                          → 5 pts
+
+    Returns:
+        Integer 0-100
+    """
+    score = 0
+    text_lower = resume_text.lower()
+
+    # Contact info (up to 20 pts)
+    contact_hits = sum(1 for p in _CONTACT_PATTERNS if p.search(resume_text))
+    score += min(contact_hits * 5, 20)
+
+    # Section presence
+    if any(kw in text_lower for kw in ["summary", "objective", "profile", "about me"]):
+        score += 10
+    if any(kw in text_lower for kw in ["experience", "employment", "work history"]):
+        score += 20
+    if any(kw in text_lower for kw in ["education", "bachelor", "master", "phd", "degree", "university", "college"]):
+        score += 10
+    if any(kw in text_lower for kw in ["skills", "technologies", "tools", "competencies"]):
+        score += 10
+
+    # Measurable results (up to 15 pts)
+    hits = len(_MEASURABLE_PATTERNS.findall(resume_text))
+    score += min(hits * 3, 15)
+
+    # Reasonable length
+    length = len(resume_text)
+    if _GOOD_LENGTH_MIN <= length <= _GOOD_LENGTH_MAX:
+        score += 10
+
+    # Skills breadth (≥5 distinct skills)
+    extracted = extract_skills_local(resume_text)
+    if len(extracted) >= 5:
+        score += 5
+
+    return min(score, 100)
