@@ -28,7 +28,10 @@ from embedder import get_embedding, get_embeddings_batch
 from scorer import (
     compute_embedding_score, compute_skill_score,
     compute_hybrid_score, get_score_breakdown,
-    get_score_label, get_score_color
+    get_score_label, get_score_color, compute_keyword_score
+)
+from skills_local import (
+    compare_skills_local, extract_years_experience, detect_education_level
 )
 from explainer import (
     generate_explanation, extract_skills_analysis,
@@ -859,30 +862,48 @@ if "results" not in st.session_state or not st.session_state["results"]:
                 
                 try:
                     emb_score = compute_embedding_score(job_emb, resume_emb)
-                    
-                    # ── Skills extraction (DeepSeek V3.2 — premium/transition) ──
+
+                    # ── Always-free: experience years + education level ──
+                    exp_years = extract_years_experience(resume_text)
+                    _, edu_label = detect_education_level(resume_text)
+
+                    # ── Skills extraction ──
+                    # Premium/transition: try LLM (DeepSeek) first, fall back to local
+                    # Local tier / disabled: use local keyword matching directly
                     skills = None
                     s_score = 50.0
-                    if enable_skills and tier in ("premium", "transition"):
-                        skills = extract_skills_analysis(job_text, resume_text)
+                    if enable_skills:
+                        if tier in ("premium", "transition"):
+                            skills = extract_skills_analysis(job_text, resume_text)
+                            # Fall back to local if API returned nothing useful
+                            if not (skills.get("matched_skills") or skills.get("missing_skills")):
+                                skills = compare_skills_local(job_text, resume_text)
+                        else:
+                            # Local mode — free, always works
+                            skills = compare_skills_local(job_text, resume_text)
                         s_score = compute_skill_score(skills)
                     else:
                         skills = {"matched_skills": [], "missing_skills": [], "extra_skills": []}
-                    
-                    # ── LLM confidence score (Gemma 31B — premium only) ──
+
+                    # ── LLM/keyword confidence score ──
+                    # Premium: Gemma 31B for true AI judgment
+                    # All others: keyword overlap (free, better than constant 50)
                     if tier == "premium":
                         l_score = get_llm_score(job_text, resume_text)
+                        # If LLM failed or returned default, use keyword score instead
+                        if l_score == 50.0:
+                            l_score = compute_keyword_score(job_text, resume_text)
                     else:
-                        l_score = 50.0
-                    
+                        l_score = compute_keyword_score(job_text, resume_text)
+
                     final_score = compute_hybrid_score(emb_score, s_score, l_score)
-                    
-                    # ── AI Explanation (Gemma 31B — premium only) ──
+
+                    # ── Explanation ──
                     if tier == "premium":
                         explanation = generate_explanation(job_text, resume_text, final_score)
                     else:
-                        explanation = generate_cheap_explanation(final_score, skills)
-                    
+                        explanation = generate_cheap_explanation(final_score, skills, exp_years)
+
                     results.append({
                         "name": name,
                         "filename": filename,
@@ -892,7 +913,9 @@ if "results" not in st.session_state or not st.session_state["results"]:
                         "llm_score": l_score,
                         "explanation": explanation,
                         "skills": skills,
-                        "tier": tier
+                        "experience_years": exp_years,
+                        "education": edu_label,
+                        "tier": tier,
                     })
                     
                     increment_user_usage(1)
@@ -923,7 +946,12 @@ if "results" not in st.session_state or not st.session_state["results"]:
             progress_bar.empty()
             status_text.empty()
             
-            results = sorted(results, key=lambda x: x["score"], reverse=True)
+            # Primary sort: score descending. Tiebreaker: experience years descending.
+            results = sorted(
+                results,
+                key=lambda x: (round(x["score"], 0), x.get("experience_years", 0)),
+                reverse=True
+            )
             
             for rank, r in enumerate(results, 1):
                 save_result(
@@ -1007,6 +1035,10 @@ if "results" in st.session_state and st.session_state["results"]:
             if r.get("skills"):
                 matched_count = len(r["skills"].get("matched_skills", []))
                 
+            comp_exp = r.get("experience_years", 0)
+            comp_edu = r.get("education", "")
+            comp_exp_str = f"💼 {comp_exp}yr" if comp_exp else ""
+            comp_edu_str = f" · 🎓 {comp_edu}" if comp_edu and comp_edu != "Not specified" else ""
             st.markdown(f"""
             <div style="
             background: linear-gradient(135deg, rgba(22,27,34,0.8), rgba(13,17,23,0.9));
@@ -1018,7 +1050,7 @@ if "results" in st.session_state and st.session_state["results"]:
             ">
                 <div style="font-size:24px; font-weight:800; color:{color};">{r['score']}</div>
                 <div style="font-weight:700; color:#e6edf3; margin-top:5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{r['name']}</div>
-                <div style="font-size:12px; color:#8b949e; margin-top:5px;">Semantic: <span style="color:#c9d1d9;">{r.get('embedding_score', 0):.0f}</span> | Skills: <span style="color:#c9d1d9;">{matched_count} matches</span></div>
+                <div style="font-size:12px; color:#8b949e; margin-top:5px;">✅ {matched_count} skills{' · ' + comp_exp_str if comp_exp_str else ''}{comp_edu_str}</div>
             </div>
             """, unsafe_allow_html=True)
             
@@ -1065,9 +1097,23 @@ if "results" in st.session_state and st.session_state["results"]:
         emb_s = r.get("embedding_score", score)
         skl_s = r.get("skill_score", 50)
         llm_s = r.get("llm_score", 50)
-        
+        exp_years = r.get("experience_years", 0)
+        edu_label = r.get("education", "")
+        tier_used = r.get("tier", "local")
+
         rank_class = f"rank-{absolute_rank}" if absolute_rank <= 3 else "rank-other"
-        
+
+        # ── Meta badges: experience, education, analysis tier ──
+        meta_parts = []
+        if exp_years:
+            meta_parts.append(f'<span style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:#818cf8;font-weight:600;">💼 {exp_years}yr exp</span>')
+        if edu_label and edu_label != "Not specified":
+            meta_parts.append(f'<span style="background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.25);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:#4ade80;font-weight:600;">🎓 {edu_label}</span>')
+        tier_colors = {"premium": ("#f59e0b", "✨ Premium AI"), "transition": ("#818cf8", "🔄 Smart"), "local": ("#6e7681", "⚡ Local")}
+        t_color, t_label = tier_colors.get(tier_used, ("#6e7681", "⚡ Local"))
+        meta_parts.append(f'<span style="background:rgba(110,118,129,0.1);border:1px solid rgba(110,118,129,0.2);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{t_color};font-weight:600;">{t_label}</span>')
+        meta_html = f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">{"".join(meta_parts)}</div>'
+
         breakdown_html = f"""
         <div class="breakdown-container">
             <div class="breakdown-item">
@@ -1081,7 +1127,7 @@ if "results" in st.session_state and st.session_state["results"]:
                 <div class="breakdown-weight">30% weight</div>
             </div>
             <div class="breakdown-item">
-                <div class="breakdown-label">AI Judge</div>
+                <div class="breakdown-label">Keywords</div>
                 <div class="breakdown-value" style="color: #f59e0b;">{llm_s:.0f}</div>
                 <div class="breakdown-weight">20% weight</div>
             </div>
@@ -1122,11 +1168,12 @@ if "results" in st.session_state and st.session_state["results"]:
                 <div class="candidate-avatar" style="background: linear-gradient(135deg, {color}88, {color}44);">
                     {initials}
                 </div>
-                <div>
+                <div style="flex:1;">
                     <p class="candidate-name">{r['name']}</p>
                     <p class="candidate-file">{r['filename']}</p>
                 </div>
             </div>
+            {meta_html}
             <div class="score-container">
                 <div>
                     <span class="score-number" style="color: {color};">{score}</span>

@@ -105,35 +105,57 @@ def extract_skills_analysis(job_desc: str, resume_text: str) -> dict:
     return parsed
 
 
-def generate_cheap_explanation(score: float, skills_data: dict) -> str:
+def generate_cheap_explanation(score: float, skills_data: dict, experience_years: int = 0) -> str:
+    """
+    Generate a structured plain-English explanation without any LLM call.
+    Uses skill overlap data and experience years extracted locally.
+
+    Args:
+        score: Hybrid match score (0-100)
+        skills_data: Dict with matched/missing/extra skill lists
+        experience_years: Years of experience extracted from resume (0 = unknown)
+    """
     matched = skills_data.get("matched_skills", []) if skills_data else []
     missing = skills_data.get("missing_skills", []) if skills_data else []
-    extra = skills_data.get("extra_skills", []) if skills_data else []
-    
+    extra   = skills_data.get("extra_skills",   []) if skills_data else []
+
     parts = []
-    if score >= 75:
-        parts.append("Strong alignment with role requirements.")
-    elif score >= 60:
-        parts.append("Moderate alignment with the position.")
-    elif score >= 40:
-        parts.append("Limited alignment with core requirements.")
-    else:
-        parts.append("Significant mismatch with the role.")
-    
-    if matched:
-        parts.append(f"Key matches: {', '.join(matched[:4])}.")
-    if missing:
-        parts.append(f"Gaps: {', '.join(missing[:4])}.")
-    if extra:
-        parts.append(f"Additional strengths: {', '.join(extra[:3])}.")
-    
-    if score >= 70:
-        parts.append("Recommend for interview screening.")
+
+    # Opening verdict
+    if score >= 80:
+        parts.append("Excellent alignment with the role requirements.")
+    elif score >= 65:
+        parts.append("Good alignment with most key requirements.")
     elif score >= 50:
-        parts.append("Consider if pipeline is thin.")
+        parts.append("Moderate alignment — some relevant experience present.")
+    elif score >= 35:
+        parts.append("Limited alignment with the core requirements.")
     else:
-        parts.append("Likely not a fit for this role.")
-    
+        parts.append("Significant mismatch with the role profile.")
+
+    # Experience context
+    if experience_years >= 1:
+        if score >= 65:
+            parts.append(f"Brings {experience_years}+ year{'s' if experience_years != 1 else ''} of relevant experience.")
+        else:
+            parts.append(f"Has {experience_years}+ year{'s' if experience_years != 1 else ''} of experience, though skill overlap is limited.")
+
+    # Skills detail
+    if matched:
+        parts.append(f"Matched skills: {', '.join(matched[:5])}.")
+    if missing:
+        parts.append(f"Missing from profile: {', '.join(missing[:4])}.")
+    if extra and score >= 50:
+        parts.append(f"Additional strengths: {', '.join(extra[:3])}.")
+
+    # Closing recommendation
+    if score >= 70:
+        parts.append("Recommended for interview.")
+    elif score >= 50:
+        parts.append("Worth considering if the pipeline is limited.")
+    else:
+        parts.append("Not a strong fit for this role.")
+
     return " ".join(parts)
 
 

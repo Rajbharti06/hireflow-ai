@@ -22,6 +22,7 @@ We apply a scaling function to spread scores across the 0-100 range for better
 differentiation between candidates.
 """
 
+import re
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -157,6 +158,58 @@ def get_score_breakdown(embedding_score: float, skill_score: float, llm_score: f
             "contribution": round(W_LLM * llm_score, 1)
         }
     }
+
+
+# ─── Keyword Overlap Score (free, no API) ────────────────────────────────────
+
+_STOP_WORDS = {
+    'the', 'and', 'for', 'with', 'this', 'that', 'will', 'are', 'have',
+    'has', 'can', 'must', 'should', 'would', 'could', 'been', 'being',
+    'our', 'their', 'your', 'you', 'any', 'all', 'not', 'from', 'such',
+    'they', 'them', 'its', 'was', 'but', 'were', 'when', 'how', 'what',
+    'who', 'which', 'than', 'then', 'also', 'more', 'some', 'over',
+    'into', 'other', 'each', 'both', 'very', 'just', 'about', 'well',
+    'work', 'role', 'team', 'join', 'help', 'make', 'use', 'used',
+    'using', 'strong', 'good', 'new', 'able', 'great', 'high', 'key',
+}
+
+
+def compute_keyword_score(job_text: str, resume_text: str) -> float:
+    """
+    Measure what fraction of meaningful terms from the job description
+    appear in the resume. Used as a free, zero-API fallback for the
+    LLM confidence score component.
+
+    Score scale:
+      ≥80% keyword match → ~100
+      50% keyword match  → ~60
+      20% keyword match  → ~20
+
+    Args:
+        job_text: Job description text
+        resume_text: Candidate resume text
+
+    Returns:
+        Float score 0-100
+    """
+    def _keywords(text: str) -> set[str]:
+        tokens = re.findall(r'\b[a-z][a-z+#./]{2,}\b', text.lower())
+        return {t for t in tokens if t not in _STOP_WORDS}
+
+    job_kw = _keywords(job_text)
+    if not job_kw:
+        return 50.0
+
+    resume_kw = _keywords(resume_text)
+    overlap = len(job_kw & resume_kw)
+
+    # Raw coverage: what % of JD keywords appear in resume
+    coverage = overlap / len(job_kw)
+
+    # Scale: 0.4 coverage (40%) → ~100, linear below that
+    # Most good matches have 30-50% keyword overlap in practice
+    scaled = min(coverage / 0.40, 1.0) * 100.0
+    return round(scaled, 1)
 
 
 # ─── Backward compatibility ─────────────────────────────────────────────────
