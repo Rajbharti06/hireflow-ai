@@ -113,6 +113,10 @@ _EXP_PATTERNS = [
     re.compile(r'(\d+)\+?\s*years?\s+in\s+(?:the\s+)?(?:industry|field|software|tech|it\b)', re.IGNORECASE),
     # "7+ years as a senior ..."
     re.compile(r'(\d+)\+?\s*years?\s+(?:as\s+a?\s+)?(?:senior|junior|lead|principal)', re.IGNORECASE),
+    # "4 years Python experience" / "5 years backend experience" (no "of")
+    re.compile(r'(\d+)\+?\s*years?\s+\w+\s+experience', re.IGNORECASE),
+    # "3+ years required" / "minimum 3 years"
+    re.compile(r'(?:minimum\s+)?(\d+)\+?\s*years?\s+(?:required|minimum|preferred)', re.IGNORECASE),
 ]
 
 _EDU_MAP: list[tuple[int, str, list[str]]] = [

@@ -1,4 +1,4 @@
-from supabase_client import supabase
+from supabase_client import supabase, supabase_db
 import streamlit as st
 from datetime import datetime
 import json
@@ -27,6 +27,7 @@ def get_total_usage():
         return profile["lifetime_usage"] or 0
     return 0
 
+
 def increment_user_usage(amount=1):
     if not supabase:
         return
@@ -38,30 +39,37 @@ def increment_user_usage(amount=1):
     except Exception as e:
         print(f"Failed to increment usage: {e}")
 
+
 # ─── Sessions (Jobs) ─────────────────────────────────────
 
 def create_session(job_title: str):
-    if not supabase:
+    if not supabase_db:
         return None
     user_id = get_user_id()
     if not user_id:
         return None
 
-    res = supabase.table("jobs").insert({
-        "user_id": user_id,
-        "title": job_title,
-        "description": ""
-    }).execute()
-
-    return res.data[0]["id"]
+    try:
+        res = supabase_db.table("jobs").insert({
+            "user_id": user_id,
+            "title": job_title,
+            "description": ""
+        }).execute()
+        return res.data[0]["id"]
+    except Exception as e:
+        print(f"[create_session] DB write failed (results will not be saved to history): {e}")
+        return None
 
 
 def save_job(job_id: str, text: str, filename: str):
-    if not supabase or not job_id:
+    if not supabase_db or not job_id:
         return
-    supabase.table("jobs").update({
-        "description": text
-    }).eq("id", job_id).execute()
+    try:
+        supabase_db.table("jobs").update({
+            "description": text
+        }).eq("id", job_id).execute()
+    except Exception as e:
+        print(f"[save_job] DB write failed: {e}")
 
 
 def get_sessions(limit=10):
@@ -95,30 +103,30 @@ def save_result(
     llm_score=None,
     rank=None
 ):
-    if not supabase or not job_id:
+    if not supabase_db or not job_id:
         return
     user_id = get_user_id()
     if not user_id:
         return
-    
-    # Supabase handles JSON conversion automatically, just pass the dict directly
-    skills_json = skills_data
 
-    supabase.table("results").insert({
-        "user_id": user_id,
-        "job_id": job_id,
-        "resume_id": None,
-        "score": score,
-        "explanation": explanation,
-        "candidate_name": candidate_name,
-        "filename": filename,
-        "embedding_score": embedding_score,
-        "skill_score": skill_score,
-        "llm_score": llm_score,
-        "rank": rank,
-        "skills_json": skills_json,
-        "shortlisted": False
-    }).execute()
+    try:
+        supabase_db.table("results").insert({
+            "user_id": user_id,
+            "job_id": job_id,
+            "resume_id": None,
+            "score": score,
+            "explanation": explanation,
+            "candidate_name": candidate_name,
+            "filename": filename,
+            "embedding_score": embedding_score,
+            "skill_score": skill_score,
+            "llm_score": llm_score,
+            "rank": rank,
+            "skills_json": skills_data,
+            "shortlisted": False
+        }).execute()
+    except Exception as e:
+        print(f"[save_result] DB write failed: {e}")
 
 
 def get_results_for_session(job_id):
@@ -136,32 +144,37 @@ def get_results_for_session(job_id):
         .execute()
 
     for r in res.data:
-        # Normalise candidate_name → name so app code can use r["name"] everywhere
         if "candidate_name" in r and "name" not in r:
             r["name"] = r["candidate_name"]
-        # Deserialise skills_json JSONB → skills dict
+        skills = None
         if r.get("skills_json"):
             if isinstance(r["skills_json"], str):
                 try:
-                    r["skills"] = json.loads(r["skills_json"])
+                    skills = json.loads(r["skills_json"])
                 except Exception:
-                    r["skills"] = None
+                    skills = None
             else:
-                r["skills"] = r["skills_json"]
+                skills = r["skills_json"]
+        r["skills"] = skills
+        meta = (skills or {}).get("_meta", {})
+        r.setdefault("experience_years", meta.get("experience_years", 0))
+        r.setdefault("education", meta.get("education", "Not specified"))
+        r.setdefault("quality_score", meta.get("quality_score", 0))
+        r.setdefault("tier", meta.get("tier", "local"))
 
     return res.data
 
 
 def toggle_shortlist(result_id, status: bool):
-    if not supabase or not result_id:
+    if not supabase_db or not result_id:
         return
-    supabase.table("results").update({
+    supabase_db.table("results").update({
         "shortlisted": status
     }).eq("id", result_id).execute()
 
 
 def delete_session(job_id):
-    if not supabase or not job_id:
+    if not supabase_db or not job_id:
         return
-    supabase.table("results").delete().eq("job_id", job_id).execute()
-    supabase.table("jobs").delete().eq("id", job_id).execute()
+    supabase_db.table("results").delete().eq("job_id", job_id).execute()
+    supabase_db.table("jobs").delete().eq("id", job_id).execute()

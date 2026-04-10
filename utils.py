@@ -47,7 +47,9 @@ def extract_candidate_name(filename: str) -> str:
     """
     # Remove extension
     name = re.sub(r'\.pdf$', '', filename, flags=re.IGNORECASE)
-    # Replace common separators with spaces
+    # Replace dots used as word separators (e.g. sarah.connor → sarah connor)
+    name = re.sub(r'(?<=\w)\.(?=\w)', ' ', name)
+    # Replace remaining common separators with spaces
     name = re.sub(r'[_\-]+', ' ', name)
     # Remove common prefixes/suffixes
     name = re.sub(r'\b(resume|cv|curriculum vitae)\b', '', name, flags=re.IGNORECASE)

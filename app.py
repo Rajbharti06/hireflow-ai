@@ -1,16 +1,11 @@
 """
-app.py — AI Resume Screener v3.0
-===================================
-Main Streamlit application — startup-tier upgrade:
-  - Top Navigation Bar
-  - Multi-AI Provider Support (OpenAI, Claude, Gemini, Perplexity, Grok, NVIDIA, Ollama)
-  - Job Summary Panel
-  - Candidate Comparison View
-  - Score Filters
-  - CSV Export
+app.py — HireFlow AI v4.0
+============================
+AI-powered resume screener for recruiters.
 
 Pipeline: PDF → Text → Batch Embed → Skills Extract → LLM Score → Hybrid Blend → Rank → Display
 
+Features: multi-AI backends · blind mode · pipeline board · JD scan · radar analytics
 Run: streamlit run app.py
 """
 
@@ -21,7 +16,6 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import streamlit as st
 import streamlit.components.v1 as components
-import time
 import pandas as pd
 from parser import extract_text_from_pdf
 from embedder import get_embedding, get_embeddings_batch
@@ -58,10 +52,79 @@ if "blind_mode" not in st.session_state:
 if "score_weights" not in st.session_state:
     st.session_state["score_weights"] = (0.50, 0.30, 0.20)  # (embedding, skills, llm)
 
+# ─── Restore Supabase session on every re-run ────────────────────────────────
+# The supabase client is a module-level singleton. Streamlit re-runs the script
+# on every interaction, so we re-apply the user's JWT at the top of every run.
+def _apply_supabase_session(access_token: str, refresh_token: str) -> str:
+    """
+    Apply a user's JWT to the shared supabase client so every subsequent
+    PostgREST request carries it and Supabase RLS passes.
+
+    Two-layer write:
+      1. supabase.options.headers  — used when _postgrest is rebuilt from scratch
+      2. supabase.postgrest.auth() — updates the currently cached postgrest client
+
+    Returns the (possibly refreshed) access_token so callers can store it.
+    """
+    current_token = access_token
+    try:
+        res = supabase.auth.set_session(access_token, refresh_token)
+        # set_session may silently refresh an expiring token
+        if res and getattr(res, "session", None) and res.session.access_token:
+            current_token = res.session.access_token
+    except Exception:
+        pass  # token invalid/expired — we still apply whatever we have below
+
+    bearer = f"Bearer {current_token}"
+    # Layer 1: options headers (used on next _postgrest rebuild)
+    supabase.options.headers["Authorization"] = bearer
+    # Layer 2: live postgrest client (supabase.postgrest auto-builds if None)
+    supabase.postgrest.auth(current_token)
+
+    return current_token
+
+
+if supabase and "user" in st.session_state:
+    _session_restored = False
+
+    if st.session_state.get("auth_access_token"):
+        try:
+            _new_tok = _apply_supabase_session(
+                st.session_state["auth_access_token"],
+                st.session_state.get("auth_refresh_token", ""),
+            )
+            # Persist refreshed token so the next run uses it
+            st.session_state["auth_access_token"] = _new_tok
+            _session_restored = True
+        except Exception:
+            pass
+
+    if not _session_restored:
+        # Fallback: recover from supabase's in-memory state (surviving restarts
+        # only when the Streamlit worker process wasn't recycled)
+        try:
+            _existing = supabase.auth.get_session()
+            if _existing and getattr(_existing, "access_token", None):
+                _tok = _apply_supabase_session(
+                    _existing.access_token, _existing.refresh_token
+                )
+                st.session_state["auth_access_token"] = _tok
+                st.session_state["auth_refresh_token"] = _existing.refresh_token
+                _session_restored = True
+        except Exception:
+            pass
+
+    if not _session_restored:
+        # Stale session: user object present but no valid tokens available.
+        # Clear it so the auth guard below re-shows the login form instead of
+        # silently failing with RLS errors on every DB write.
+        for _k in ("user", "results", "auth_access_token", "auth_refresh_token"):
+            st.session_state.pop(_k, None)
+
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Resume Screener",
+    page_title="HireFlow AI",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -419,7 +482,10 @@ if supabase is not None:
     if "access_token" in query_params and "refresh_token" in query_params:
         try:
             res = supabase.auth.set_session(query_params["access_token"], query_params["refresh_token"])
+            _tok = _apply_supabase_session(query_params["access_token"], query_params["refresh_token"])
             st.session_state.user = res.user
+            st.session_state["auth_access_token"] = _tok
+            st.session_state["auth_refresh_token"] = query_params["refresh_token"]
             if hasattr(st, "experimental_set_query_params"):
                 st.experimental_set_query_params()
             else:
@@ -431,62 +497,79 @@ if supabase is not None:
 
 # ─── Auth Guard ───────────────────────────────────────────────────────────────
 if supabase is not None and "user" not in st.session_state:
-    st.markdown("<h2 style='text-align: center; color: white; margin-top: 5rem;'>Login to Resume AI</h2>", unsafe_allow_html=True)
-    
+    st.markdown("""
+    <div style='text-align:center; margin-top:3rem; margin-bottom:1.5rem;'>
+        <p style='font-size:2rem; margin:0;'>⚡</p>
+        <h2 style='color:white; margin:0.25rem 0 0.25rem;'>HireFlow AI</h2>
+        <p style='color:#6e7681; font-size:0.9rem;'>Sign in to your account or create a new one</p>
+    </div>
+    """, unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("Login", use_container_width=True):
-                try:
-                    res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                    st.session_state.user = res.user
-                    st.rerun()
-                except Exception as e:
-                    msg = str(e)
-                    if "Email not confirmed" in msg:
-                        st.error("Login failed: Please confirm your email address first.")
-                    elif "Invalid login credentials" in msg:
-                        st.error("Login failed: Incorrect email or password.")
-                    else:
-                        st.error(f"Login failed: {msg}")
-        with c2:
-            if st.button("Sign Up", use_container_width=True):
-                if len(password) < 8:
+        _auth_tab_signin, _auth_tab_signup = st.tabs(["Sign In", "Sign Up"])
+
+    with col2:
+        with _auth_tab_signin:
+            email = st.text_input("Email", key="si_email")
+            password = st.text_input("Password", type="password", key="si_pass")
+            if st.button("Sign In", use_container_width=True, type="primary"):
+                if not email or not password:
+                    st.error("Please enter your email and password.")
+                else:
+                    try:
+                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                        _tok = _apply_supabase_session(res.session.access_token, res.session.refresh_token)
+                        st.session_state.user = res.user
+                        st.session_state["auth_access_token"] = _tok
+                        st.session_state["auth_refresh_token"] = res.session.refresh_token
+                        st.rerun()
+                    except Exception as e:
+                        msg = str(e)
+                        if "Email not confirmed" in msg:
+                            st.error("Please confirm your email address first.")
+                        elif "Invalid login credentials" in msg:
+                            st.error("Incorrect email or password.")
+                        else:
+                            st.error(f"Sign in failed: {msg}")
+
+        with _auth_tab_signup:
+            su_email = st.text_input("Email", key="su_email")
+            su_pass = st.text_input("Password (min 8 chars)", type="password", key="su_pass")
+            if st.button("Create Account", use_container_width=True, type="primary"):
+                if not su_email or not su_pass:
+                    st.error("Please enter your email and a password.")
+                elif len(su_pass) < 8:
                     st.error("Password must be at least 8 characters.")
                 else:
                     try:
-                        res = supabase.auth.sign_up({"email": email, "password": password})
-                        # Try to log in immediately if email confirmation is disabled
-                        try:
-                            res_login = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                            st.session_state.user = res_login.user
-                            st.rerun()
-                        except Exception:
-                            st.success("Sign up successful! Please check your email inbox to confirm your account.")
+                        supabase.auth.sign_up({"email": su_email, "password": su_pass})
+                        st.success("✅ Account created! Switch to **Sign In** tab and log in.")
                     except Exception as e:
-                        st.error(f"Signup failed: {str(e)}")
+                        msg = str(e)
+                        if "already registered" in msg.lower() or "already been registered" in msg.lower():
+                            st.error("Email already registered. Please sign in instead.")
+                        else:
+                            st.error(f"Sign up failed: {msg}")
 
-        st.markdown("<hr style='border:1px solid rgba(255,255,255,0.1); margin: 2rem 0;'/>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center; color:#8b949e;'>Or continue with</p>", unsafe_allow_html=True)
-        
+        st.markdown("<hr style='border:1px solid rgba(255,255,255,0.1); margin: 1.5rem 0;'/>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#8b949e; font-size:0.85rem;'>Or continue with</p>", unsafe_allow_html=True)
+    with col2:
         # Single Sign-On Buttons
-        google_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=google"
-        github_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=github"
-        
+        _redirect = "http%3A%2F%2Flocalhost%3A8501"
+        google_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=google&redirect_to={_redirect}"
+        github_url = f"{supabase.supabase_url}/auth/v1/authorize?provider=github&redirect_to={_redirect}"
+
         st.markdown(f"""
-        <div style="display: flex; gap: 10px; justify-content: center; margin-bottom: 20px;">
-            <a href="{google_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;">
+        <div style="display: flex; gap: 10px; justify-content: center; margin-bottom: 12px;">
+            <a href="{google_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none; font-size:0.9rem;">
                 <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="16" style="margin-right:8px;">Google
             </a>
-            <a href="{github_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none;">
+            <a href="{github_url}" target="_self" style="flex: 1; display:flex; align-items:center; justify-content:center; padding:10px; border-radius:8px; border:1px solid #30363d; color:white; background:#24292e; text-decoration:none; font-size:0.9rem;">
                 <img src="https://upload.wikimedia.org/wikipedia/commons/9/91/Octicons-mark-github.svg" width="16" style="filter:invert(1); margin-right:8px;">GitHub
             </a>
         </div>
-        <p style='text-align:center; font-size:12px; color:#8b949e;'><em>For OAuth to work, ensure you enabled Google/GitHub in your Supabase Auth settings.</em></p>
+        <p style='text-align:center; font-size:11px; color:#6e7681;'>OAuth requires Google/GitHub enabled in your <a href='https://supabase.com/dashboard' target='_blank' style='color:#d4af37;'>Supabase Auth settings</a>.</p>
         """, unsafe_allow_html=True)
         
     st.stop()
@@ -655,9 +738,8 @@ with st.sidebar:
                 supabase.auth.sign_out()
             except Exception:
                 pass
-            del st.session_state["user"]
-            if "results" in st.session_state:
-                del st.session_state["results"]
+            for _k in ("user", "results", "auth_access_token", "auth_refresh_token"):
+                st.session_state.pop(_k, None)
             st.rerun()
 
     st.markdown("""
@@ -837,8 +919,21 @@ if "results" not in st.session_state or not st.session_state["results"]:
             
         mode_label = "⚡ Quick Analyze" if cheap_mode else "🚀 Analyze Candidates"
         
+        # ── Duplicate detection ──
+        _seen_fnames, _deduped, _dupes = set(), [], []
+        for _rf in resume_files:
+            _norm = _rf.name.strip().lower()
+            if _norm in _seen_fnames:
+                _dupes.append(_rf.name)
+            else:
+                _seen_fnames.add(_norm)
+                _deduped.append(_rf)
+        if _dupes:
+            st.warning(f"⚠️ Duplicate files removed: {', '.join(_dupes)}")
+            resume_files = _deduped
+
         if st.button(mode_label, use_container_width=True, disabled=(total_usage >= limit)):
-            
+
             # ── Processing Pipeline ──
             with st.spinner(""):
                 st.markdown('<p class="processing-text">📋 Parsing job description...</p>', unsafe_allow_html=True)
@@ -892,15 +987,17 @@ if "results" not in st.session_state or not st.session_state["results"]:
             
             job_name = job_file.name.replace(".pdf", "").replace(".PDF", "")
             session_id = create_session(job_name)
+            if not session_id:
+                st.toast("Results won't be saved to history (DB unavailable)", icon="ℹ️")
             save_job(session_id, job_text, job_file.name)
             
+            current_usage = total_usage  # snapshot once; incremented locally
+
             for i, (resume_text, resume_emb, name, filename) in enumerate(
                 zip(resume_texts, resume_embeddings, resume_names, resume_filenames)
             ):
                 progress = (i + 1) / len(resume_texts)
-                
-                current_usage = get_total_usage()
-                
+
                 if current_usage >= limit:
                     st.warning(f"⚠️ Limit of {limit} reached. Skipped remaining candidates.")
                     break
@@ -982,7 +1079,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     })
                     
                     increment_user_usage(1)
-                    
+                    current_usage += 1
+
                 except Exception as e:
                     parse_errors.append({
                         "name": name,
@@ -1003,7 +1101,11 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     "skill_score": 0,
                     "llm_score": 0,
                     "explanation": f"⚠️ Error processing: {err['error']}",
-                    "skills": None
+                    "skills": None,
+                    "experience_years": 0,
+                    "education": "Not specified",
+                    "quality_score": 0,
+                    "tier": "error",
                 })
             
             progress_bar.empty()
@@ -1017,24 +1119,30 @@ if "results" not in st.session_state or not st.session_state["results"]:
             )
             
             for rank, r in enumerate(results, 1):
+                skills_payload = r.get("skills") or {}
+                skills_payload["_meta"] = {
+                    "experience_years": r.get("experience_years", 0),
+                    "education": r.get("education", "Not specified"),
+                    "quality_score": r.get("quality_score", 0),
+                    "tier": r.get("tier", "local"),
+                }
                 save_result(
                     job_id=session_id,
                     candidate_name=r["name"],
                     filename=r["filename"],
                     score=r["score"],
                     explanation=r["explanation"],
-                    skills_data=r.get("skills"),
+                    skills_data=skills_payload,
                     embedding_score=r.get("embedding_score"),
                     skill_score=r.get("skill_score"),
                     llm_score=r.get("llm_score"),
                     rank=rank
                 )
-            
+
             st.session_state["results"] = results
             st.session_state["view_mode"] = "new"
             st.session_state["job_name"] = job_name
-            st.success("⚡ Top candidates identified instantly")
-            time.sleep(1)
+            st.toast("⚡ Top candidates identified!")
             st.rerun()
 
     elif not job_file:
@@ -1199,20 +1307,25 @@ if "results" in st.session_state and st.session_state["results"]:
         # Filter toolbar
         search_query = st.text_input(
             "search",
-            placeholder="🔎  Search by name or skill  (e.g. 'Python' or 'Sarah')",
+            placeholder="🔎  Search by name, skill, note, or keyword  (e.g. 'Python' or 'Sarah')",
             label_visibility="collapsed",
             key="candidate_search"
         )
-        fc1, fc2 = st.columns([3, 1])
+        fc1, fc2, fc3 = st.columns([3, 1, 1])
         with fc1:
             min_score = st.slider("Minimum score", 0, 100, 0, key="min_score_slider",
                                   help="Drag right to hide weak candidates")
         with fc2:
+            sort_by = st.selectbox(
+                "Sort by", ["Score", "Name", "Experience", "Quality"],
+                key="sort_by_select", label_visibility="collapsed"
+            )
+        with fc3:
             st.markdown("<div style='margin-top:30px;'></div>", unsafe_allow_html=True)
             show_top = st.checkbox("🔥 Top Picks only (≥70)", key="show_top_cb")
 
         # Apply filters
-        filtered_results = all_results
+        filtered_results = list(all_results)
         if search_query:
             q_lower = search_query.lower()
             filtered_results = [
@@ -1222,12 +1335,24 @@ if "results" in st.session_state and st.session_state["results"]:
                     q_lower in s.lower()
                     for s in r["skills"].get("matched_skills", []) + r["skills"].get("extra_skills", [])
                 ))
+                or q_lower in (r.get("explanation") or "").lower()
+                or q_lower in st.session_state.get("candidate_notes", {}).get(r["filename"], "").lower()
             ]
         filtered_results = [r for r in filtered_results if r["score"] >= min_score]
         if show_top:
             filtered_results = [r for r in filtered_results if r["score"] >= 70]
 
-        st.markdown(f"<p style='color:#6e7681;font-size:0.82rem;margin-bottom:0.75rem;'>Showing {len(filtered_results)} of {len(all_results)} candidates</p>", unsafe_allow_html=True)
+        # Apply sort
+        _sort_key = {
+            "Score":      lambda x: x["score"],
+            "Name":       lambda x: x["name"].lower(),
+            "Experience": lambda x: x.get("experience_years", 0),
+            "Quality":    lambda x: x.get("quality_score", 0),
+        }.get(sort_by, lambda x: x["score"])
+        _sort_rev = sort_by != "Name"
+        filtered_results = sorted(filtered_results, key=_sort_key, reverse=_sort_rev)
+
+        st.markdown(f"<p style='color:#6e7681;font-size:0.82rem;margin-bottom:0.75rem;'>Showing {len(filtered_results)} of {len(all_results)} candidates · sorted by {sort_by}</p>", unsafe_allow_html=True)
 
         # ── Candidate Cards ──
         for rank, r in enumerate(filtered_results, 1):
@@ -1381,10 +1506,13 @@ if "results" in st.session_state and st.session_state["results"]:
 
             # ── Interview questions expander ──
             with st.expander(f"🎤 Interview Questions — {display_name}", expanded=False):
-                interview_qs = generate_interview_questions(
-                    job_name, r.get("skills") or {}, r["score"],
-                    r["name"], r.get("experience_years", 0),
-                )
+                _iq_cache_key = f"iq_{r['filename']}"
+                if _iq_cache_key not in st.session_state:
+                    st.session_state[_iq_cache_key] = generate_interview_questions(
+                        job_name, r.get("skills") or {}, r["score"],
+                        r["name"], r.get("experience_years", 0),
+                    )
+                interview_qs = st.session_state[_iq_cache_key]
                 md_pack = format_questions_markdown(interview_qs, r["name"], r["score"])
                 iq_col1, iq_col2 = st.columns(2)
                 sections_map = [

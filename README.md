@@ -1,101 +1,182 @@
-# 🎯 AI Resume Screener v2.0
+# HireFlow AI
 
-> AI-powered candidate screening tool with **hybrid scoring** — scores and ranks resumes against job descriptions using semantic understanding, skill analysis, and AI judgment.
+> AI-powered resume screener for recruiters — screen 100+ candidates in seconds with explainable, multi-signal scoring.
 
-## Pipeline
+![HireFlow AI Login](screenshots/01_login.png)
+
+---
+
+## Overview
+
+HireFlow AI ranks resumes against a job description using a three-signal hybrid scoring engine: semantic embeddings, skill overlap analysis, and LLM judgment. Results are ranked, explained in plain English, and exportable — all without leaving your browser.
+
+Works fully offline (Zero-Cost Mode) with a local ML model and no API key required.
+
+---
+
+## Screenshots
+
+### Dashboard
+![HireFlow AI Dashboard](screenshots/02_dashboard.png)
+
+---
+
+## Features
+
+| Feature | Description |
+|---------|-------------|
+| **Hybrid AI Scoring** | Semantic embeddings + skill overlap + LLM judgment blended into one transparent score |
+| **Zero-Cost Mode** | Works 100% offline with local ML — no API key needed |
+| **Blind Mode** | Hides candidate names during scoring to reduce unconscious bias |
+| **Interview Packs** | Auto-generates tailored interview questions for each candidate — export as markdown |
+| **Analytics Charts** | Score distribution histogram and skills-coverage chart for the full candidate pool |
+| **Skills Gap Analysis** | Per-candidate matched, missing, and extra skills breakdown |
+| **Export Anywhere** | Download results as CSV or a full markdown interview report with one click |
+| **Pipeline Board** | Move candidates through Screened → Interview → Offer → Rejected stages |
+| **JD Scanner** | Scan any job description to preview required skills before uploading resumes |
+| **Radar Charts** | Visual skills radar per candidate (experience, education, quality, tier) |
+| **Session History** | Past screenings saved to Supabase — reload any session from the sidebar |
+| **Auth & Usage Tracking** | Email/password + OAuth sign-in via Supabase Auth |
+
+---
+
+## Scoring Pipeline
 
 ```
 PDF → Text → Batch Embed → Skills Extract → LLM Score → Hybrid Blend → Rank → Display
 ```
 
+### Hybrid Score Formula
+
+```
+final_score = W₁ × embedding_similarity + W₂ × skill_overlap + W₃ × llm_confidence
+```
+
+Default weights (tunable in sidebar):
+
+| Signal | Default | What it captures |
+|--------|---------|-----------------|
+| Semantic Similarity | 50% | Conceptual alignment between resume and JD |
+| Skill Overlap | 30% | Keyword/skill checklist coverage |
+| LLM Confidence | 20% | AI judgment on seniority fit, red flags, trajectory |
+
+Weights are adjustable via sliders in the sidebar — must sum to 100%.
+
+---
+
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Clone
+git clone https://github.com/Rajbharti06/hireflow-ai.git
+cd hireflow-ai
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Set your OpenAI API key
-set OPENAI_API_KEY=sk-your-key-here
+# 3. Configure environment
+cp .env.example .env
+# Edit .env and add your keys (see Configuration below)
 
-# 3. Run the app
+# 4. Run
 streamlit run app.py
 ```
+
+The app opens at `http://localhost:8501`.
+
+**No API key?** Leave `OPENAI_API_KEY` blank — the app falls back to Zero-Cost Mode using the local `all-MiniLM-L6-v2` sentence-transformer (~80 MB, downloaded on first run).
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in the values you need:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Optional | OpenAI key for GPT-4o-mini LLM scoring and explanations |
+| `SUPABASE_URL` | Optional | Supabase project URL — enables auth and session history |
+| `SUPABASE_ANON_KEY` | Optional | Supabase anon key — used for auth and read queries |
+| `SUPABASE_SERVICE_KEY` | Optional | Service-role key — bypasses RLS for server-side DB writes |
+
+Without Supabase keys the app runs in local mode — auth and history are disabled but all scoring works.
+
+---
+
+## AI Backends
+
+### OpenAI (recommended for best explanations)
+- Set `OPENAI_API_KEY` in `.env`
+- Uses `gpt-4o-mini` — fast and cost-effective
+- Generates rich plain-English explanations and per-candidate LLM scores
+
+### Ollama (free, local, private)
+- Install: [ollama.com](https://ollama.com)
+- Run: `ollama serve` then `ollama pull mistral`
+- Select **Ollama** in the sidebar AI backend dropdown
+
+### Zero-Cost Mode (no API key)
+- Uses only the local sentence-transformer for semantic scoring
+- Skill scoring and rule-based explanations still run
+- LLM score defaults to neutral (50) — no API calls made
+
+---
 
 ## Architecture
 
 | Module | Purpose |
 |--------|---------|
-| `app.py` | Streamlit UI — upload, process, display ranked results with score breakdowns |
-| `parser.py` | PDF → clean text extraction via pdfplumber |
-| `embedder.py` | Text → 384-dim semantic vectors via sentence-transformers |
-| `scorer.py` | **Hybrid scoring engine** — 50% embedding + 30% skills + 20% LLM |
-| `explainer.py` | AI explanations, LLM scoring, skills extraction, rejection reasoning |
-| `database.py` | SQLite persistence — sessions, results, and history |
-| `utils.py` | Shared helpers |
+| `app.py` | Streamlit UI — upload, process, display ranked results |
+| `parser.py` | PDF → clean text via pdfplumber |
+| `embedder.py` | Text → 384-dim vectors via sentence-transformers |
+| `scorer.py` | Hybrid scoring engine — embedding + skills + LLM blend |
+| `explainer.py` | LLM explanations, skill extraction, AI scoring |
+| `skills_local.py` | Rule-based skill extraction, experience/education detection, resume quality scoring |
+| `interview_gen.py` | Interview question generation per candidate |
+| `database.py` | Supabase persistence — sessions, results, history |
+| `supabase_client.py` | Supabase client setup (anon + service-role) |
+| `utils.py` | Shared helpers (name extraction, text truncation) |
 
-## Hybrid Scoring (v2.0)
+---
 
-```
-final_score = 0.50 × embedding_similarity + 0.30 × skill_overlap + 0.20 × llm_confidence
-```
+## Database Schema
 
-| Signal | Weight | What it captures |
-|--------|--------|-----------------|
-| Embedding Similarity | 50% | Semantic meaning — conceptual alignment |
-| Skill Overlap | 30% | Checklist coverage — did they tick the boxes? |
-| LLM Confidence | 20% | AI judgment — seniority fit, red flags, trajectory |
+Requires two tables in Supabase (`supabase_schema.sql` included):
 
-## AI Backends
+- **`jobs`** — one row per screening session (job title, description, user)
+- **`results`** — one row per candidate per session (scores, explanation, skills JSON, shortlist flag)
+- **`profiles`** — one row per user (usage tracking)
 
-### OpenAI (recommended for demos)
-- Set `OPENAI_API_KEY` environment variable
-- Uses `gpt-4o-mini` — fast, cheap, high quality
+Row Level Security (RLS) is enforced on all tables. The service-role key (`SUPABASE_SERVICE_KEY`) is used for server-side writes to bypass RLS.
 
-### Ollama (free, local, private)
-- Install: [ollama.com](https://ollama.com)
-- Run: `ollama serve` then `ollama pull mistral`
-- Select "Ollama" in the sidebar
-
-## Features
-
-### Core
-- ✅ PDF parsing with error handling
-- ✅ Semantic similarity scoring (not just keyword matching)
-- ✅ AI-generated plain English explanations
-- ✅ Skill extraction: matched, missing, and extra skills
-- ✅ Ranked results from highest to lowest
-
-### v2.0 Upgrades
-- ✅ **Hybrid scoring** — 3-signal blend (embedding + skills + LLM)
-- ✅ **Score breakdown** — transparent Semantic/Skills/AI Judge contribution per candidate
-- ✅ **Batch embeddings** — process all resumes at once (faster)
-- ✅ **LLM response caching** — no duplicate API calls
-- ✅ **💰 Cheap Mode** — skip LLM calls, use rule-based explanations
-- ✅ **"Why not selected"** — rejection-specific explanations for low scorers
-- ✅ **SQLite persistence** — sessions survive refresh, browsable history
-- ✅ **Session history** — reload past screenings from sidebar
-
-## Cheap Mode
-
-Toggle **💰 Cheap Mode** in the sidebar to:
-- Skip LLM explanation calls (saves API cost)
-- Use rule-based explanations from skills data
-- Default LLM score to 50 (neutral)
-- Perfect for screening 50+ resumes on a budget
+---
 
 ## Tech Stack
 
-- **Python** — core
-- **Streamlit** — UI
-- **pdfplumber** — PDF parsing
-- **sentence-transformers** — embeddings (all-MiniLM-L6-v2)
+- **Python 3.10+**
+- **Streamlit** — UI framework
+- **pdfplumber** — PDF text extraction
+- **sentence-transformers** (`all-MiniLM-L6-v2`) — local semantic embeddings
 - **scikit-learn** — cosine similarity
-- **OpenAI / Ollama** — LLM explanations + scoring
-- **SQLite** — persistence
+- **OpenAI / Ollama** — LLM explanations and scoring
+- **Supabase** — auth, PostgreSQL database, RLS
+- **Plotly** — analytics charts and radar visualizations
+- **pandas** — result table and CSV export
 
-## Notes
+---
 
-- This is a **POC / demo**, not production software
-- Hybrid scoring produces more differentiated results than pure cosine similarity
-- First run will download the sentence-transformer model (~80MB)
-- LLM calls are cached per JD+resume pair within a session
+## Development
+
+```bash
+# Run with auto-reload
+streamlit run app.py
+
+# Generate sample PDFs for testing
+python generate_pdfs.py
+```
+
+---
+
+## License
+
+MIT
