@@ -32,9 +32,9 @@ from scorer import (
 )
 from skills_local import (
     compare_skills_local, extract_years_experience, detect_education_level,
-    compute_resume_quality_score
+    compute_resume_quality_score, extract_skills_local,
 )
-from interview_gen import generate_interview_questions, format_questions_markdown
+from interview_gen import generate_interview_questions, format_questions_markdown, _detect_job_type
 from explainer import (
     generate_explanation, extract_skills_analysis,
     get_llm_score, generate_cheap_explanation, AI_BACKEND
@@ -49,6 +49,14 @@ from supabase_client import supabase
 
 if "results" not in st.session_state:
     st.session_state["results"] = []
+if "candidate_stages" not in st.session_state:
+    st.session_state["candidate_stages"] = {}   # key: candidate filename → stage label
+if "candidate_notes" not in st.session_state:
+    st.session_state["candidate_notes"] = {}    # key: candidate filename → note text
+if "blind_mode" not in st.session_state:
+    st.session_state["blind_mode"] = False
+if "score_weights" not in st.session_state:
+    st.session_state["score_weights"] = (0.50, 0.30, 0.20)  # (embedding, skills, llm)
 
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
@@ -354,6 +362,36 @@ st.markdown("""
 
     /* ── Divider ── */
     .section-divider { height: 1px; background: linear-gradient(90deg, transparent, rgba(99,102,241,0.2), transparent); margin: 1.5rem 0; }
+
+    /* ── Pipeline stage badge ── */
+    .stage-badge {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 3px 10px; border-radius: 100px;
+        font-size: 0.68rem; font-weight: 700; letter-spacing: 0.3px;
+    }
+    .stage-screening  { background: rgba(110,118,129,0.12); color:#8b949e; border:1px solid rgba(110,118,129,0.25); }
+    .stage-shortlist  { background: rgba(212,175,55,0.12);  color:#d4af37; border:1px solid rgba(212,175,55,0.3); }
+    .stage-phone      { background: rgba(99,102,241,0.12);  color:#818cf8; border:1px solid rgba(99,102,241,0.25); }
+    .stage-technical  { background: rgba(56,139,253,0.12);  color:#60a5fa; border:1px solid rgba(56,139,253,0.25); }
+    .stage-offer      { background: rgba(34,197,94,0.12);   color:#4ade80; border:1px solid rgba(34,197,94,0.25); }
+    .stage-rejected   { background: rgba(248,81,73,0.08);   color:#f87171; border:1px solid rgba(248,81,73,0.2); }
+
+    /* ── JD scan panel ── */
+    .jd-panel {
+        background: linear-gradient(135deg, rgba(22,27,34,0.7), rgba(13,17,23,0.8));
+        border: 1px solid rgba(99,102,241,0.2);
+        border-left: 3px solid rgba(99,102,241,0.5);
+        border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem;
+    }
+    .jd-panel-title { font-size: 0.65rem; font-weight: 700; color: #484f58; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 0.5rem; }
+    .jd-stat { display: inline-block; background: rgba(13,17,23,0.6); border: 1px solid rgba(48,54,61,0.3); border-radius: 8px; padding: 4px 12px; font-size: 0.78rem; color: #c9d1d9; margin: 3px; }
+    .jd-stat b { color: #e6edf3; }
+
+    /* ── Notes textarea override ── */
+    .stTextArea textarea { background: rgba(13,17,23,0.6) !important; border-color: rgba(48,54,61,0.4) !important; color: #c9d1d9 !important; font-size: 0.85rem !important; border-radius: 10px !important; }
+
+    /* ── Blind mode ── */
+    .blind-badge { display:inline-block; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); border-radius:100px; padding:2px 10px; font-size:0.65rem; font-weight:700; color:#818cf8; letter-spacing:0.5px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -528,14 +566,25 @@ with st.sidebar:
             )
     
     st.markdown("---")
-    st.markdown("### ⚙️ Configuration")
+    st.markdown("### ⚙️ Scoring Weights")
+    st.caption("Must sum to 100%")
+    w_emb_pct = st.slider("🧠 Semantic", 10, 80, 50, step=5, help="Embedding cosine similarity")
+    w_skl_pct = st.slider("🔍 Skills", 5, 60, 30, step=5, help="Skill keyword overlap")
+    w_llm_pct = 100 - w_emb_pct - w_skl_pct
+    w_llm_pct = max(5, w_llm_pct)
+    st.caption(f"⌨️ Keywords (auto): **{w_llm_pct}%**")
+    # Normalise so they always sum to 1.0
+    _total = w_emb_pct + w_skl_pct + w_llm_pct
+    st.session_state["score_weights"] = (w_emb_pct/_total, w_skl_pct/_total, w_llm_pct/_total)
+
     st.markdown("---")
-    
-    # AI Provider configuration is exclusively managed by environment variables.
-    
-    st.markdown("---")
-    
-    # Feature toggles
+
+    # Blind mode + skill analysis toggles
+    st.markdown("### 🎛️ Display Options")
+    st.session_state["blind_mode"] = st.toggle(
+        "🙈 Blind Mode", value=st.session_state["blind_mode"],
+        help="Hide candidate names for bias-free screening"
+    )
     enable_skills = st.checkbox(
         "🔍 Skill Analysis", value=True,
         help="Extract and compare skills between JD and resumes"
@@ -737,6 +786,47 @@ if "results" not in st.session_state or not st.session_state["results"]:
             label_visibility="collapsed"
         )
 
+    # ── JD Quick Scan ────────────────────────────────────────────────────────
+    if job_file:
+        _jd_cache_key = f"jd_scan_{job_file.name}_{job_file.size}"
+        if _jd_cache_key not in st.session_state:
+            try:
+                _jd_preview_text = extract_text_from_pdf(job_file)
+                job_file.seek(0)
+                _jd_skills_req = extract_skills_local(_jd_preview_text)
+                _jd_exp_req = extract_years_experience(_jd_preview_text)
+                _, _jd_edu_req = detect_education_level(_jd_preview_text)
+                _jd_type = _detect_job_type(_jd_preview_text).replace("_", " ").title()
+                _word_count = len(_jd_preview_text.split())
+                st.session_state[_jd_cache_key] = {
+                    "skills": _jd_skills_req,
+                    "exp": _jd_exp_req,
+                    "edu": _jd_edu_req,
+                    "type": _jd_type,
+                    "words": _word_count,
+                }
+            except Exception:
+                st.session_state[_jd_cache_key] = None
+
+        _scan = st.session_state.get(_jd_cache_key)
+        if _scan:
+            _jd_skills_preview = ", ".join(_scan["skills"][:8]) + (f" +{len(_scan['skills'])-8} more" if len(_scan["skills"]) > 8 else "") if _scan["skills"] else "None detected"
+            _exp_str = f"{_scan['exp']}+ yrs required" if _scan["exp"] else "Not specified"
+            _edu_str = _scan["edu"] if _scan["edu"] != "Not specified" else "Not specified"
+            st.markdown(f"""
+            <div class="jd-panel">
+                <div class="jd-panel-title">📋 JD Quick Scan — {job_file.name}</div>
+                <span class="jd-stat">🏷️ Role type: <b>{_scan["type"]}</b></span>
+                <span class="jd-stat">📝 <b>{_scan["words"]}</b> words</span>
+                <span class="jd-stat">🔧 Skills required: <b>{len(_scan["skills"])}</b></span>
+                <span class="jd-stat">💼 Experience: <b>{_exp_str}</b></span>
+                <span class="jd-stat">🎓 Education: <b>{_edu_str}</b></span>
+                <div style="margin-top:8px;font-size:0.75rem;color:#6e7681;">
+                    Key skills detected: <span style="color:#c9d1d9;">{_jd_skills_preview}</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
     st.markdown("<br>", unsafe_allow_html=True)
 
     if job_file and resume_files:
@@ -864,7 +954,8 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     else:
                         l_score = compute_keyword_score(job_text, resume_text)
 
-                    final_score = compute_hybrid_score(emb_score, s_score, l_score)
+                    _we, _ws, _wl = st.session_state.get("score_weights", (0.50, 0.30, 0.20))
+                    final_score = compute_hybrid_score(emb_score, s_score, l_score, _we, _ws, _wl)
 
                     # ── Explanation ──
                     if tier == "premium":
@@ -1005,53 +1096,85 @@ if "results" in st.session_state and st.session_state["results"]:
         top3 = all_results[:min(3, len(all_results))]
         medals = ["🥇", "🥈", "🥉"]
         comp_cols = st.columns(min(3, len(top3)))
+        _blind_ov = st.session_state.get("blind_mode", False)
         for idx, r in enumerate(top3):
             color = get_score_color(r["score"])
             matched_count = len(r["skills"].get("matched_skills", [])) if r.get("skills") else 0
             exp_str  = f"💼 {r.get('experience_years',0)}yr  " if r.get("experience_years") else ""
             edu_str  = f"🎓 {r.get('education','')}" if r.get("education") and r["education"] != "Not specified" else ""
             q_score  = r.get("quality_score", 0)
+            _ov_name = f"Candidate #{idx+1}" if _blind_ov else r['name']
+            _ov_stage = st.session_state["candidate_stages"].get(r.get("filename", ""), "⚪ Screening")
             with comp_cols[idx]:
                 st.markdown(f"""
                 <div class="top-card" style="border:1px solid {color}44; border-top:3px solid {color};">
                     <div style="font-size:1.4rem;margin-bottom:4px;">{medals[idx]}</div>
                     <div style="font-size:2.2rem;font-weight:900;color:{color};letter-spacing:-2px;">{r['score']}</div>
                     <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px;">/100</div>
-                    <div style="font-weight:700;color:#e6edf3;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{r['name']}</div>
+                    <div style="font-weight:700;color:#e6edf3;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{_ov_name}</div>
                     <div style="font-size:0.72rem;color:#6e7681;margin-top:6px;">✅ {matched_count} skills matched</div>
                     <div style="font-size:0.7rem;color:#6e7681;margin-top:3px;">{exp_str}{edu_str}</div>
-                    <div style="font-size:0.7rem;color:#484f58;margin-top:3px;">📄 Resume quality: {q_score}/100</div>
+                    <div style="font-size:0.7rem;color:#484f58;margin-top:3px;">📄 Quality: {q_score}/100</div>
+                    <div style="margin-top:6px;">{_ov_stage}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
         st.markdown("<div class='section-divider' style='margin:1.5rem 0;'></div>", unsafe_allow_html=True)
 
-        # Top 5 skills required vs coverage
-        st.markdown("<h3 style='color:#e6edf3;font-size:1.1rem;margin:0 0 0.75rem 0;'>📋 Shortlisted Candidates</h3>", unsafe_allow_html=True)
-        shortlisted_overview = [r for r in all_results if r.get("shortlisted")]
-        if shortlisted_overview:
-            for r in shortlisted_overview:
-                color = get_score_color(r["score"])
-                st.markdown(f"""
-                <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
-                    background:rgba(22,27,34,0.6);border:1px solid rgba(48,54,61,0.3);
-                    border-left:3px solid {color};border-radius:10px;margin-bottom:6px;">
-                    <div style="font-size:1.4rem;font-weight:900;color:{color};min-width:40px;">{r['score']}</div>
-                    <div>
-                        <div style="font-weight:700;color:#e6edf3;font-size:0.9rem;">{r['name']}</div>
-                        <div style="font-size:0.7rem;color:#6e7681;">{r.get('filename','')}</div>
+        # ── Pipeline Board ──
+        st.markdown("<h3 style='color:#e6edf3;font-size:1.1rem;margin:0 0 0.75rem 0;'>🗂️ Hiring Pipeline</h3>", unsafe_allow_html=True)
+        _pipeline_stages = [
+            ("⭐ Shortlisted",         "rgba(212,175,55,0.15)",  "#d4af37"),
+            ("📞 Phone Screen",         "rgba(99,102,241,0.15)",  "#818cf8"),
+            ("🔧 Technical Interview",  "rgba(56,139,253,0.15)",  "#60a5fa"),
+            ("💼 Offer Extended",       "rgba(34,197,94,0.15)",   "#4ade80"),
+            ("❌ Rejected",             "rgba(248,81,73,0.08)",   "#f87171"),
+        ]
+        _stages_dict = st.session_state["candidate_stages"]
+        _any_in_pipeline = any(
+            v != "⚪ Screening" for v in _stages_dict.values()
+        )
+        if _any_in_pipeline:
+            for _stg_label, _stg_bg, _stg_color in _pipeline_stages:
+                _stg_candidates = [
+                    r for r in all_results
+                    if _stages_dict.get(r.get("filename", ""), "⚪ Screening") == _stg_label
+                ]
+                if not _stg_candidates:
+                    continue
+                st.markdown(f"<div style='font-size:0.72rem;font-weight:700;color:#6e7681;text-transform:uppercase;letter-spacing:1px;margin:0.75rem 0 0.4rem 0;'>{_stg_label} &nbsp;·&nbsp; {len(_stg_candidates)}</div>", unsafe_allow_html=True)
+                for r in _stg_candidates:
+                    _p_color = get_score_color(r["score"])
+                    _p_name = f"Candidate #{all_results.index(r)+1}" if _blind_ov else r["name"]
+                    _p_note = st.session_state["candidate_notes"].get(r.get("filename",""), "")
+                    st.markdown(f"""
+                    <div style="display:flex;align-items:center;gap:12px;padding:8px 14px;
+                        background:{_stg_bg};border:1px solid {_stg_color}33;
+                        border-left:3px solid {_stg_color};border-radius:10px;margin-bottom:5px;">
+                        <div style="font-size:1.2rem;font-weight:900;color:{_p_color};min-width:36px;">{r['score']}</div>
+                        <div style="flex:1;">
+                            <div style="font-weight:700;color:#e6edf3;font-size:0.88rem;">{_p_name}</div>
+                            {f'<div style="font-size:0.68rem;color:#6e7681;margin-top:2px;">📝 {_p_note}</div>' if _p_note else ""}
+                        </div>
                     </div>
-                </div>
-                """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
         else:
-            st.markdown("<p style='color:#484f58;font-size:0.85rem;'>Star candidates on the Candidates tab to shortlist them here.</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:#484f58;font-size:0.85rem;'>Set pipeline stages on the Candidates tab to track progress here.</p>", unsafe_allow_html=True)
 
         # Export toolbar
         st.markdown("<div class='section-divider'></div>", unsafe_allow_html=True)
         exp_col1, exp_col2, exp_col3 = st.columns(3)
         with exp_col1:
+            _stages_map = st.session_state.get("candidate_stages", {})
+            _notes_map  = st.session_state.get("candidate_notes", {})
             df_export = pd.DataFrame([
-                {k: v for k, v in r.items() if k not in ("skills", "resume_text")}
+                {
+                    **{k: v for k, v in r.items() if k not in ("skills", "resume_text")},
+                    "pipeline_stage": _stages_map.get(r.get("filename", ""), "⚪ Screening"),
+                    "recruiter_notes": _notes_map.get(r.get("filename", ""), ""),
+                    "matched_skills": ", ".join(r["skills"].get("matched_skills", [])) if r.get("skills") else "",
+                    "missing_skills": ", ".join(r["skills"].get("missing_skills", [])) if r.get("skills") else "",
+                }
                 for r in all_results
             ])
             st.download_button("📥 Export CSV", df_export.to_csv(index=False), "resume_results.csv", use_container_width=True)
@@ -1112,7 +1235,10 @@ if "results" in st.session_state and st.session_state["results"]:
             score = r["score"]
             color = get_score_color(score)
             label = get_score_label(score)
-            initials = get_initials(r["name"])
+            _blind = st.session_state.get("blind_mode", False)
+            display_name = f"Candidate #{absolute_rank}" if _blind else r["name"]
+            display_file = "●●●●●●.pdf" if _blind else r["filename"]
+            initials = f"C{absolute_rank}" if _blind else get_initials(r["name"])
 
             emb_s = r.get("embedding_score", score)
             skl_s = r.get("skill_score", 50)
@@ -1190,8 +1316,8 @@ if "results" in st.session_state and st.session_state["results"]:
                 <div class="candidate-header">
                     <div class="candidate-avatar" style="background:linear-gradient(135deg,{color}88,{color}44);">{initials}</div>
                     <div style="flex:1;">
-                        <p class="candidate-name">{r['name']}</p>
-                        <p class="candidate-file">{r['filename']}</p>
+                        <p class="candidate-name">{display_name}{"&nbsp;<span class='blind-badge'>BLIND</span>" if _blind else ""}</p>
+                        <p class="candidate-file">{display_file}</p>
                     </div>
                 </div>
                 {meta_html}
@@ -1214,21 +1340,47 @@ if "results" in st.session_state and st.session_state["results"]:
             </div>
             """, unsafe_allow_html=True)
 
-            # ── Shortlist toggle ──
-            sl_col, _ = st.columns([1, 4])
-            with sl_col:
-                shortlisted = st.checkbox(
-                    "⭐ Shortlist",
-                    value=r.get("shortlisted", False),
-                    key=f"short_{r.get('id', absolute_rank)}"
+            # ── Pipeline Stage Selector ──
+            _stage_options = [
+                "⚪ Screening", "⭐ Shortlisted", "📞 Phone Screen",
+                "🔧 Technical Interview", "💼 Offer Extended", "❌ Rejected"
+            ]
+            _stage_key = r.get("filename", str(absolute_rank))
+            _current_stage = st.session_state["candidate_stages"].get(_stage_key, "⚪ Screening")
+            if _current_stage not in _stage_options:
+                _current_stage = "⚪ Screening"
+
+            _notes_key = _stage_key
+            sc1, sc2 = st.columns([2, 3])
+            with sc1:
+                _new_stage = st.selectbox(
+                    "Pipeline stage",
+                    _stage_options,
+                    index=_stage_options.index(_current_stage),
+                    key=f"stage_{absolute_rank}",
+                    label_visibility="collapsed",
                 )
-                if shortlisted != r.get("shortlisted", False):
+                if _new_stage != _current_stage:
+                    st.session_state["candidate_stages"][_stage_key] = _new_stage
+                    # Sync shortlisted flag for DB
+                    _is_shortlisted = _new_stage in ("⭐ Shortlisted", "📞 Phone Screen", "🔧 Technical Interview", "💼 Offer Extended")
                     if "id" in r:
-                        toggle_shortlist(r["id"], shortlisted)
-                    r["shortlisted"] = shortlisted
+                        toggle_shortlist(r["id"], _is_shortlisted)
+                    r["shortlisted"] = _is_shortlisted
+            with sc2:
+                _note_val = st.session_state["candidate_notes"].get(_notes_key, "")
+                _new_note = st.text_input(
+                    "Recruiter note",
+                    value=_note_val,
+                    placeholder="Add a note for this candidate...",
+                    key=f"note_{absolute_rank}",
+                    label_visibility="collapsed",
+                )
+                if _new_note != _note_val:
+                    st.session_state["candidate_notes"][_notes_key] = _new_note
 
             # ── Interview questions expander ──
-            with st.expander(f"🎤 Interview Questions — {r['name']}", expanded=False):
+            with st.expander(f"🎤 Interview Questions — {display_name}", expanded=False):
                 interview_qs = generate_interview_questions(
                     job_name, r.get("skills") or {}, r["score"],
                     r["name"], r.get("experience_years", 0),
@@ -1334,6 +1486,53 @@ if "results" in st.session_state and st.session_state["results"]:
                 margin=dict(l=20, r=60, t=50, b=20), height=200,
             )
             st.plotly_chart(fig_avg, use_container_width=True)
+
+            # ── Radar chart: top-5 candidate profiles ──
+            top5 = all_results[:min(5, len(all_results))]
+            if len(top5) >= 2:
+                _blind_an = st.session_state.get("blind_mode", False)
+                _radar_categories = ["Semantic", "Skills", "Keywords", "Resume Quality", "Experience"]
+                _max_exp = max((r.get("experience_years", 0) for r in all_results), default=1) or 1
+                fig_radar = go.Figure()
+                _radar_colors = [
+                    ("#d4af37", "rgba(212,175,55,0.1)"),
+                    ("#818cf8", "rgba(129,140,248,0.1)"),
+                    ("#4ade80", "rgba(74,222,128,0.1)"),
+                    ("#f59e0b", "rgba(245,158,11,0.1)"),
+                    ("#60a5fa", "rgba(96,165,250,0.1)"),
+                ]
+                for _ri, _rc in enumerate(top5):
+                    _rc_name = f"Candidate #{_ri+1}" if _blind_an else _rc["name"].split()[0]
+                    _rc_vals = [
+                        _rc.get("embedding_score", 0),
+                        _rc.get("skill_score", 0),
+                        _rc.get("llm_score", 0),
+                        _rc.get("quality_score", 0),
+                        min(_rc.get("experience_years", 0) / _max_exp * 100, 100),
+                    ]
+                    _line_c, _fill_c = _radar_colors[_ri % len(_radar_colors)]
+                    fig_radar.add_trace(go.Scatterpolar(
+                        r=_rc_vals + [_rc_vals[0]],
+                        theta=_radar_categories + [_radar_categories[0]],
+                        fill="toself",
+                        name=_rc_name,
+                        line=dict(color=_line_c, width=2),
+                        fillcolor=_fill_c,
+                        opacity=0.9,
+                    ))
+                fig_radar.update_layout(
+                    polar=dict(
+                        bgcolor="rgba(13,17,23,0)",
+                        radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=9, color="#484f58"), gridcolor="rgba(48,54,61,0.3)", linecolor="rgba(48,54,61,0.3)"),
+                        angularaxis=dict(tickfont=dict(size=11, color="#c9d1d9"), gridcolor="rgba(48,54,61,0.25)", linecolor="rgba(48,54,61,0.3)"),
+                    ),
+                    title=dict(text=f"Candidate Profile Radar (Top {len(top5)})", font=dict(color="#e6edf3", size=14)),
+                    paper_bgcolor="rgba(13,17,23,0)",
+                    font=dict(color="#6e7681", size=11),
+                    legend=dict(font=dict(color="#8b949e", size=11), bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.15),
+                    margin=dict(l=40, r=40, t=60, b=60), height=380,
+                )
+                st.plotly_chart(fig_radar, use_container_width=True)
 
             # ── Score vs Experience scatter ──
             if any(r.get("experience_years") for r in all_results):

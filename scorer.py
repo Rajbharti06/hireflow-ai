@@ -97,31 +97,24 @@ def compute_skill_score(skills_data: dict) -> float:
 def compute_hybrid_score(
     embedding_score: float,
     skill_score: float,
-    llm_score: float
+    llm_score: float,
+    w_embedding: float | None = None,
+    w_skills: float | None = None,
+    w_llm: float | None = None,
 ) -> float:
     """
     Compute the final hybrid score from all three signals.
-    
-    final = 0.50 * embedding + 0.30 * skills + 0.20 * llm
-    
-    This produces scores that are:
-    - More differentiated than pure cosine similarity
-    - Less gameable (need real skills, not just buzzwords)
-    - More explainable (we know which signal contributed what)
-    
-    Args:
-        embedding_score: Semantic similarity score (0-100)
-        skill_score: Skill overlap score (0-100)
-        llm_score: LLM confidence score (0-100)
-    
+
+    Custom weights can be passed to override the defaults (must sum to 1.0).
+    If any custom weight is None, all three fall back to the module defaults.
+
     Returns:
         Weighted final score (0-100)
     """
-    final = (
-        W_EMBEDDING * embedding_score +
-        W_SKILLS * skill_score +
-        W_LLM * llm_score
-    )
+    we = W_EMBEDDING if w_embedding is None else w_embedding
+    ws = W_SKILLS    if w_skills   is None else w_skills
+    wl = W_LLM       if w_llm     is None else w_llm
+    final = we * embedding_score + ws * skill_score + wl * llm_score
     return round(final, 1)
 
 
