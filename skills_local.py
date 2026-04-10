@@ -101,16 +101,23 @@ _SKILL_PATTERNS: dict[str, re.Pattern] = {
 
 # ─── Experience Patterns ─────────────────────────────────────────────────────
 _EXP_PATTERNS = [
+    # "7+ years of experience" / "7 years of work experience"
     re.compile(r'(\d+)\+?\s*years?\s+(?:of\s+)?(?:work\s+)?experience', re.IGNORECASE),
+    # "7+ years of backend engineering experience" — allows up to 4 words before "experience"
+    re.compile(r'(\d+)\+?\s*years?\s+of\s+(?:\w+\s+){1,4}experience', re.IGNORECASE),
+    # "7+ yrs of experience"
     re.compile(r'(\d+)\+?\s*yrs?\s+(?:of\s+)?experience', re.IGNORECASE),
+    # "experience of 7 years"
     re.compile(r'experience\s+(?:of\s+)?(\d+)\+?\s*years?', re.IGNORECASE),
+    # "7+ years in the industry/field/software/tech"
     re.compile(r'(\d+)\+?\s*years?\s+in\s+(?:the\s+)?(?:industry|field|software|tech|it\b)', re.IGNORECASE),
+    # "7+ years as a senior ..."
     re.compile(r'(\d+)\+?\s*years?\s+(?:as\s+a?\s+)?(?:senior|junior|lead|principal)', re.IGNORECASE),
 ]
 
 _EDU_MAP: list[tuple[int, str, list[str]]] = [
     (4, "PhD",        ["phd", "ph.d", "doctorate", "doctoral"]),
-    (3, "Master's",   ["master", "master's", "masters", "mba", "m.sc", "m.tech", "mtech", "m.s.", "msc", "me "]),
+    (3, "Master's",   ["master's", "masters degree", "master of", "mba", "m.sc.", "m.tech", "mtech", "m.eng", "msc ", "mscs", "m.s. ", "m.s.c"]),
     (2, "Bachelor's", ["bachelor", "bachelor's", "b.tech", "btech", "b.e.", "b.sc", "bsc", "b.s.", "undergraduate", "b.eng"]),
     (1, "Diploma",    ["diploma", "associate degree", "associate's"]),
 ]
