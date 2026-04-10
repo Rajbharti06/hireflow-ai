@@ -22,7 +22,8 @@ from embedder import get_embedding, get_embeddings_batch
 from scorer import (
     compute_embedding_score, compute_skill_score,
     compute_hybrid_score, get_score_breakdown,
-    get_score_label, get_score_color, compute_keyword_score
+    get_score_label, get_score_color, compute_keyword_score,
+    get_confidence_level
 )
 from skills_local import (
     compare_skills_local, extract_years_experience, detect_education_level,
@@ -1056,7 +1057,10 @@ if "results" not in st.session_state or not st.session_state["results"]:
 
                     # ── Explanation ──
                     if tier == "premium":
-                        explanation = generate_explanation(job_text, resume_text, final_score)
+                        explanation = generate_explanation(
+                            job_text, resume_text, final_score,
+                            skills_data=skills, experience_years=exp_years
+                        )
                     else:
                         explanation = generate_cheap_explanation(final_score, skills, exp_years)
 
@@ -1213,12 +1217,18 @@ if "results" in st.session_state and st.session_state["results"]:
             q_score  = r.get("quality_score", 0)
             _ov_name = f"Candidate #{idx+1}" if _blind_ov else r['name']
             _ov_stage = st.session_state["candidate_stages"].get(r.get("filename", ""), "⚪ Screening")
+            _ov_conf_label, _ov_conf_color = get_confidence_level(r["score"])
             with comp_cols[idx]:
                 st.markdown(f"""
                 <div class="top-card" style="border:1px solid {color}44; border-top:3px solid {color};">
                     <div style="font-size:1.4rem;margin-bottom:4px;">{medals[idx]}</div>
                     <div style="font-size:2.2rem;font-weight:900;color:{color};letter-spacing:-2px;">{r['score']}</div>
-                    <div style="font-size:0.72rem;color:#8b949e;margin-bottom:6px;">/100</div>
+                    <div style="font-size:0.72rem;color:#8b949e;margin-bottom:4px;">/100</div>
+                    <div style="font-size:0.68rem;font-weight:700;color:{_ov_conf_color};
+                        background:{_ov_conf_color}18;border:1px solid {_ov_conf_color}44;
+                        border-radius:6px;padding:2px 8px;display:inline-block;margin-bottom:6px;">
+                        🎯 {_ov_conf_label} Confidence
+                    </div>
                     <div style="font-weight:700;color:#e6edf3;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{_ov_name}</div>
                     <div style="font-size:0.72rem;color:#6e7681;margin-top:6px;">✅ {matched_count} skills matched</div>
                     <div style="font-size:0.7rem;color:#6e7681;margin-top:3px;">{exp_str}{edu_str}</div>
@@ -1373,6 +1383,7 @@ if "results" in st.session_state and st.session_state["results"]:
             tier_used = r.get("tier", "local")
 
             quality_score = r.get("quality_score", 0)
+            confidence_label, confidence_color = get_confidence_level(score)
 
             # ── Meta badges ──
             meta_parts = []
@@ -1383,6 +1394,8 @@ if "results" in st.session_state and st.session_state["results"]:
             if quality_score:
                 q_color = "#22c55e" if quality_score >= 70 else "#f59e0b" if quality_score >= 45 else "#ef4444"
                 meta_parts.append(f'<span style="background:rgba(34,197,94,0.08);border:1px solid {q_color}44;border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{q_color};font-weight:600;">📄 Resume {quality_score}/100</span>')
+            # Confidence level badge
+            meta_parts.append(f'<span style="background:{confidence_color}18;border:1px solid {confidence_color}55;border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{confidence_color};font-weight:700;">🎯 {confidence_label} Confidence</span>')
             tier_colors = {"premium": ("#f59e0b", "✨ Premium AI"), "transition": ("#818cf8", "🔄 Smart"), "local": ("#6e7681", "⚡ Local")}
             t_color, t_label = tier_colors.get(tier_used, ("#6e7681", "⚡ Local"))
             meta_parts.append(f'<span style="background:rgba(110,118,129,0.1);border:1px solid rgba(110,118,129,0.2);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{t_color};font-weight:600;">{t_label}</span>')
@@ -1430,7 +1443,37 @@ if "results" in st.session_state and st.session_state["results"]:
                         skills_html += '</div>'
                     skills_html += '</div>'
 
-            expl_title = "AI Assessment" if score >= 40 else "⚠️ Why Not Selected"
+            # ── "Why Not Selected" block for weak/poor candidates ──
+            why_not_html = ""
+            if score < 60 and skills_data:
+                _wn_missing = skills_data.get("missing_skills", [])
+                _wn_extra   = skills_data.get("extra_skills",   [])
+                _wn_reasons = []
+                if _wn_missing:
+                    _wn_reasons.append(f"Missing key skills: <b>{', '.join(_wn_missing[:5])}</b>.")
+                if emb_s < 50:
+                    _wn_reasons.append("Low semantic alignment with the job description.")
+                if skl_s < 40:
+                    _wn_reasons.append("Skill coverage below the required threshold.")
+                if not _wn_reasons:
+                    _wn_reasons.append("Overall profile does not align closely with the role requirements.")
+                _wn_items = "".join(f'<li style="margin-bottom:4px;">{r_}</li>' for r_ in _wn_reasons)
+                why_not_html = f"""
+                <div style="margin:10px 0;padding:12px 16px;
+                    background:rgba(248,81,73,0.06);
+                    border:1px solid rgba(248,81,73,0.25);
+                    border-left:3px solid #f85149;
+                    border-radius:10px;">
+                    <div style="font-size:0.72rem;font-weight:700;color:#f85149;
+                        text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+                        ❌ Why Not Selected
+                    </div>
+                    <ul style="margin:0;padding-left:18px;font-size:0.8rem;color:#c9d1d9;line-height:1.6;">
+                        {_wn_items}
+                    </ul>
+                </div>"""
+
+            expl_title = "AI Assessment"
             rank_class = f"rank-{absolute_rank}" if absolute_rank <= 3 else "rank-other"
 
             st.markdown(f"""
@@ -1451,12 +1494,20 @@ if "results" in st.session_state and st.session_state["results"]:
                         <span class="score-number" style="color:{color};">{score}</span>
                         <span class="score-out-of">/100</span>
                     </div>
-                    <div class="score-label-text">{label}</div>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <div class="score-label-text">{label}</div>
+                        <div style="font-size:0.72rem;font-weight:700;color:{confidence_color};
+                            background:{confidence_color}15;border:1px solid {confidence_color}44;
+                            border-radius:6px;padding:2px 8px;">
+                            {confidence_label} Confidence
+                        </div>
+                    </div>
                 </div>
                 <div class="score-bar-bg">
                     <div class="score-bar-fill" style="width:{score}%;background:linear-gradient(90deg,{color},{color}66);"></div>
                 </div>
                 {breakdown_html}
+                {why_not_html}
                 <div class="explanation-box">
                     <div class="explanation-title">{expl_title}</div>
                     <div class="explanation-text">{r['explanation']}</div>

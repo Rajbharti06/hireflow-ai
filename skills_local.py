@@ -74,9 +74,39 @@ _SKILLS_DB: dict[str, list[str]] = {
         "OpenAPI", "Protobuf",
     ],
     "Security": [
-        "Cybersecurity", "Penetration Testing", "OWASP", "OAuth2",
-        "SSL", "TLS", "Encryption", "Zero Trust", "SOC2", "GDPR",
-        "IAM", "SIEM", "Vulnerability Assessment",
+        # Core domains
+        "Cybersecurity", "Information Security", "Network Security",
+        "Application Security", "Cloud Security", "Endpoint Security",
+        "Security Policies", "Security Procedures", "Risk Management",
+        "Risk Assessment", "Risk Mitigation", "Security Architecture",
+        "Security Awareness", "Security Auditing", "Security Monitoring",
+        "Security Controls", "Access Control", "Data Protection",
+        # Offensive / testing
+        "Penetration Testing", "Ethical Hacking", "Red Teaming", "Blue Teaming",
+        "Vulnerability Assessment", "Vulnerability Management", "Vulnerability Scanning",
+        "OWASP", "Exploit Development", "Bug Bounty",
+        # SIEM / monitoring tools
+        "SIEM", "Splunk", "QRadar", "ArcSight", "LogRhythm",
+        "Wireshark", "Nmap", "Metasploit", "Burp Suite", "Nessus",
+        "Qualys", "CrowdStrike", "Microsoft Sentinel", "Elastic SIEM",
+        "IDS", "IPS", "IDS/IPS", "Snort", "Suricata",
+        "Palo Alto", "Fortinet", "Check Point",
+        # Identity & access
+        "IAM", "PAM", "MFA", "Zero Trust", "OAuth2", "SAML",
+        "Active Directory", "LDAP", "Identity Management",
+        # Crypto & network
+        "SSL", "TLS", "PKI", "Encryption", "Firewalls", "VPN", "ZTNA",
+        "Network Monitoring", "Intrusion Detection", "Intrusion Prevention",
+        # Threat & IR
+        "Threat Intelligence", "Threat Hunting", "Digital Forensics",
+        "Incident Response", "Incident Handling", "DFIR", "Malware Analysis",
+        "SOC", "Security Operations", "Threat Analysis",
+        # Compliance & frameworks
+        "SOC2", "GDPR", "HIPAA", "ISO 27001", "NIST", "CIS Controls",
+        "PCI DSS", "FISMA", "MITRE ATT&CK", "CMMC", "Compliance",
+        "Security Compliance", "Regulatory Compliance",
+        # Scripting & automation
+        "Security Automation", "SOAR", "Security Scripting",
     ],
     "Soft Skills": [
         "Communication", "Leadership", "Teamwork", "Problem Solving",

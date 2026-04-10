@@ -28,11 +28,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 
 # ─── Weights for hybrid scoring ──────────────────────────────────────────────
-# These can be tuned per client. The current blend prioritizes semantic similarity
-# while giving meaningful weight to concrete skill overlap and LLM judgment.
-W_EMBEDDING = 0.50
-W_SKILLS = 0.30
-W_LLM = 0.20
+# Skill overlap is the most reliable differentiator for same-domain candidates.
+# Embedding similarity (all-MiniLM-L6-v2) clusters in 0.45-0.55 for any
+# same-domain pair, providing little differentiation — so we weight it lower.
+W_EMBEDDING = 0.30
+W_SKILLS    = 0.55
+W_LLM       = 0.15
 
 
 def compute_embedding_score(job_embedding: np.ndarray, resume_embedding: np.ndarray) -> float:
@@ -156,6 +157,7 @@ def get_score_breakdown(embedding_score: float, skill_score: float, llm_score: f
 # ─── Keyword Overlap Score (free, no API) ────────────────────────────────────
 
 _STOP_WORDS = {
+    # common English function words
     'the', 'and', 'for', 'with', 'this', 'that', 'will', 'are', 'have',
     'has', 'can', 'must', 'should', 'would', 'could', 'been', 'being',
     'our', 'their', 'your', 'you', 'any', 'all', 'not', 'from', 'such',
@@ -164,19 +166,34 @@ _STOP_WORDS = {
     'into', 'other', 'each', 'both', 'very', 'just', 'about', 'well',
     'work', 'role', 'team', 'join', 'help', 'make', 'use', 'used',
     'using', 'strong', 'good', 'new', 'able', 'great', 'high', 'key',
+    # ultra-generic job-description filler words that add no signal
+    'skill', 'skills', 'experience', 'requirement', 'requirements',
+    'responsible', 'responsibility', 'responsibilities', 'required',
+    'preferred', 'desired', 'ability', 'must', 'include', 'including',
+    'ensure', 'support', 'provide', 'develop', 'maintain', 'manage',
+    'knowledge', 'understanding', 'working', 'relevant', 'related',
+    'years', 'degree', 'equivalent', 'position', 'candidate', 'company',
+    'business', 'department', 'process', 'processes', 'system', 'systems',
+    'solution', 'solutions', 'service', 'services', 'implement',
+    'implementation', 'application', 'applications', 'environment',
+    'environments', 'across', 'within', 'between', 'against', 'through',
+    'perform', 'performing', 'performed', 'create', 'creating', 'report',
+    'reporting', 'reports', 'analyze', 'analysis', 'review', 'reviews',
+    'identify', 'identified', 'build', 'building', 'design', 'designing',
+    'senior', 'junior', 'lead', 'level', 'minimum', 'least', 'plus',
 }
 
 
 def compute_keyword_score(job_text: str, resume_text: str) -> float:
     """
-    Measure what fraction of meaningful terms from the job description
-    appear in the resume. Used as a free, zero-API fallback for the
-    LLM confidence score component.
+    Measure how many MEANINGFUL (5+ char, non-generic) JD terms appear in
+    the resume.  Calibrated so that a genuine domain match reaches 70-90
+    without needing 40% raw coverage (which is impossible for real JDs).
 
-    Score scale:
-      ≥80% keyword match → ~100
-      50% keyword match  → ~60
-      20% keyword match  → ~20
+    Calibration:
+      20% coverage of important JD terms → 80   (good match)
+      10% coverage                        → 40   (moderate)
+       5% coverage                        → 20   (weak)
 
     Args:
         job_text: Job description text
@@ -186,7 +203,8 @@ def compute_keyword_score(job_text: str, resume_text: str) -> float:
         Float score 0-100
     """
     def _keywords(text: str) -> set[str]:
-        tokens = re.findall(r'\b[a-z][a-z+#./]{2,}\b', text.lower())
+        # Only keep tokens ≥5 chars to cut generic short words
+        tokens = re.findall(r'\b[a-z][a-z+#./]{4,}\b', text.lower())
         return {t for t in tokens if t not in _STOP_WORDS}
 
     job_kw = _keywords(job_text)
@@ -195,13 +213,10 @@ def compute_keyword_score(job_text: str, resume_text: str) -> float:
 
     resume_kw = _keywords(resume_text)
     overlap = len(job_kw & resume_kw)
-
-    # Raw coverage: what % of JD keywords appear in resume
     coverage = overlap / len(job_kw)
 
-    # Scale: 0.4 coverage (40%) → ~100, linear below that
-    # Most good matches have 30-50% keyword overlap in practice
-    scaled = min(coverage / 0.40, 1.0) * 100.0
+    # Scale: 20% coverage → 100 (real JDs rarely exceed 25% overlap even for ideal matches)
+    scaled = min(coverage / 0.20, 1.0) * 100.0
     return round(scaled, 1)
 
 
@@ -217,25 +232,32 @@ def compute_score(job_embedding: np.ndarray, resume_embedding: np.ndarray) -> fl
 def scale_score(raw_score: float) -> float:
     """
     Scale raw cosine similarity to a more meaningful 0-100 range.
-    
-    Maps the typical text similarity range (0.2-0.85) to (0-100).
-    Scores below 0.2 → 0, scores above 0.85 → 100.
-    
+
+    Calibrated for sentence-transformers all-MiniLM / NV-Embed style models
+    where realistic cross-domain similarity sits in 0.35-0.80.
+
+    Mapping:
+      ≤ 0.30  → 0    (completely unrelated)
+        0.45  → ~38  (weak overlap)
+        0.55  → ~63  (moderate, same domain)
+        0.65  → ~88  (strong, direct match)
+      ≥ 0.76  → 100  (near-perfect)
+
     Args:
-        raw_score: Raw cosine similarity value
-    
+        raw_score: Raw cosine similarity value (0-1)
+
     Returns:
-        Scaled score between 0 and 100
+        Scaled score 0-100
     """
-    min_sim = 0.20  # Floor: completely unrelated text
-    max_sim = 0.85  # Ceiling: near-perfect match
-    
+    min_sim = 0.30  # Floor — truly unrelated documents
+    max_sim = 0.76  # Ceiling — achievable with same-domain text
+
     if raw_score <= min_sim:
         return 0.0
     elif raw_score >= max_sim:
         return 100.0
     else:
-        return ((raw_score - min_sim) / (max_sim - min_sim)) * 100.0
+        return round(((raw_score - min_sim) / (max_sim - min_sim)) * 100.0, 1)
 
 
 # ─── Labels & Colors ────────────────────────────────────────────────────────
@@ -260,6 +282,22 @@ def get_score_label(score: float) -> str:
         return "🟠 Weak Match"
     else:
         return "🔴 Poor Match"
+
+
+def get_confidence_level(score: float) -> tuple[str, str]:
+    """
+    Return a (label, hex_color) confidence level for a match score.
+
+    High   ≥ 80 — strong evidence of fit, act on it
+    Medium 60-79 — promising but worth probing gaps
+    Low    < 60  — limited fit, treat score with caution
+    """
+    if score >= 80:
+        return "High", "#22c55e"
+    elif score >= 60:
+        return "Medium", "#f59e0b"
+    else:
+        return "Low", "#ef4444"
 
 
 def get_score_color(score: float) -> str:
