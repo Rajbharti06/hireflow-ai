@@ -136,12 +136,15 @@ def get_results_for_session(job_id):
         .execute()
 
     for r in res.data:
+        # Normalise candidate_name → name so app code can use r["name"] everywhere
+        if "candidate_name" in r and "name" not in r:
+            r["name"] = r["candidate_name"]
+        # Deserialise skills_json JSONB → skills dict
         if r.get("skills_json"):
-            # Supabase returns the dict directly since it's JSONB, but if it's string wrapped, load it
             if isinstance(r["skills_json"], str):
                 try:
                     r["skills"] = json.loads(r["skills_json"])
-                except:
+                except Exception:
                     r["skills"] = None
             else:
                 r["skills"] = r["skills_json"]
