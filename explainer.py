@@ -37,9 +37,20 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral")
 # ─── LLM Response Cache ─────────────────────────────────────────────────────
 _llm_cache: dict[str, str] = {}
 
-# Sentinel returned when the API blocks the request (content filter, 400, etc.)
-# Callers check for this and fall back to local/cheap logic.
-_API_BLOCKED = "__API_BLOCKED__"
+# ─── Sentinels ───────────────────────────────────────────────────────────────
+# _API_BLOCKED    — content filter / bad request (try next backend)
+# _CREDITS_EXHAUSTED — 401/402/403/429 (mark backend as dead, try next)
+_API_BLOCKED       = "__API_BLOCKED__"
+_CREDITS_EXHAUSTED = "__CREDITS_EXHAUSTED__"
+
+# ─── Session-scoped backend state ────────────────────────────────────────────
+# These persist for the lifetime of the Streamlit server process.
+# In practice that means one user session (Streamlit reruns don't re-import).
+_exhausted_backends: set[str] = set()   # backends that returned 401/402/403/429
+_active_backend:     str      = ""      # last backend that returned a clean response
+
+# Priority order for automatic fallback (first with credentials wins)
+_FALLBACK_ORDER = ["nvidia", "openai", "claude", "gemini", "perplexity", "grok", "ollama"]
 
 
 def _cache_key(job_desc: str, resume_text: str, prompt_type: str) -> str:
@@ -48,10 +59,18 @@ def _cache_key(job_desc: str, resume_text: str, prompt_type: str) -> str:
 
 
 def _is_api_error(text: str) -> bool:
-    """Return True if the API response is an error or blocked sentinel."""
-    if not isinstance(text, str):
+    """
+    Return True if the API response is an error, blocked sentinel, credits sentinel,
+    or a raw error payload that leaked through (e.g. old code stored the raw JSON body).
+    """
+    if not isinstance(text, str) or not text.strip():
         return True
-    return text == _API_BLOCKED or text.startswith("⚠️")
+    if text in (_API_BLOCKED, _CREDITS_EXHAUSTED) or text.startswith("⚠️"):
+        return True
+    # Detect raw API error JSON from Anthropic / OpenAI format that may have
+    # been cached or saved to the DB by older code versions.
+    s = text.lstrip()
+    return s.startswith('{"type":"error"') or s.startswith('{"error":') or s.startswith("{'type': 'error'")
 
 
 def _sanitize_text(text: str, max_chars: int = 2000) -> str:
@@ -204,6 +223,84 @@ def generate_cheap_explanation(score: float, skills_data: dict, experience_years
     return " ".join(parts)
 
 
+def sanitize_explanation(
+    text: str,
+    score: float = 50,
+    skills_data: dict | None = None,
+    experience_years: int = 0,
+) -> str:
+    """
+    Return a clean explanation safe to display in the UI.
+
+    Replaces API error strings, raw JSON error payloads, empty strings, and
+    the _API_BLOCKED sentinel with a locally-generated cheap explanation.
+    Call this whenever loading saved explanations from the database so stale
+    error strings from older code versions are never shown to users.
+    """
+    if _is_api_error(text):
+        return generate_cheap_explanation(score, skills_data or {}, experience_years)
+    return text
+
+
+# ─── Backend Status & Ollama Utilities ───────────────────────────────────────
+
+def get_ollama_models() -> list[str]:
+    """
+    Fetch the list of locally available Ollama models.
+    Returns an empty list if Ollama is not running or not reachable.
+    """
+    try:
+        resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        pass
+    return []
+
+
+def get_backend_status() -> dict:
+    """
+    Return current backend status for sidebar display.
+
+    Keys:
+      primary             — configured AI_BACKEND
+      active              — last backend that returned a clean response
+      exhausted           — list of backends that failed with credits errors
+      using_fallback      — True when active != primary
+      using_ollama_fallback — True when fell back to Ollama from an API backend
+      ollama_reachable    — True when Ollama is running and has ≥1 model
+    """
+    primary = os.environ.get("AI_BACKEND", AI_BACKEND).lower()
+    active  = _active_backend or primary
+    models  = get_ollama_models()
+    return {
+        "primary":               primary,
+        "active":                active,
+        "exhausted":             list(_exhausted_backends),
+        "using_fallback":        active != primary,
+        "using_ollama_fallback": active == "ollama" and primary != "ollama",
+        "ollama_reachable":      len(models) > 0,
+        "ollama_models":         models,
+    }
+
+
+def set_ollama_model(model_name: str) -> None:
+    """Update the Ollama model used for calls (persists for this server process)."""
+    global OLLAMA_MODEL
+    OLLAMA_MODEL = model_name
+
+
+def reset_backend_failures() -> None:
+    """
+    Clear all tracked backend failures so they are retried next call.
+    Call this when the user re-enters an API key or wants to retry.
+    """
+    global _active_backend
+    _exhausted_backends.clear()
+    _active_backend = ""
+
+
 # ─── Prompt Templates ────────────────────────────────────────────────────────
 
 def _build_explanation_prompt(job_desc: str, resume_text: str, score: float) -> str:
@@ -271,31 +368,94 @@ Return ONLY valid JSON with these exact keys (no markdown, no explanation):
 
 # ─── Internal Routing & Multi-AI Handlers ─────────────────────────────────────
 
-def _route_call(prompt: str) -> str:
-    backend = os.environ.get("AI_BACKEND", AI_BACKEND).lower()
+def _has_credentials(backend: str) -> bool:
+    """Return True if the backend has an API key configured (or is local)."""
+    key_env = {
+        "nvidia":     "NVIDIA_API_KEY",
+        "openai":     "OPENAI_API_KEY",
+        "claude":     "ANTHROPIC_API_KEY",
+        "gemini":     "GEMINI_API_KEY",
+        "perplexity": "PPLX_API_KEY",
+        "grok":       "GROK_API_KEY",
+        "ollama":     None,   # local — no key needed
+    }
+    env_var = key_env.get(backend)
+    return True if env_var is None else bool(os.environ.get(env_var, ""))
 
-    if backend == "claude":
-        return _call_claude(prompt)
-    elif backend == "gemini":
-        return _call_gemini(prompt)
-    elif backend == "perplexity":
-        return _call_perplexity(prompt)
-    elif backend == "grok":
-        return _call_grok(prompt)
-    elif backend == "nvidia":
-        return _call_nvidia(prompt)
-    elif backend == "ollama":
-        return _call_ollama(prompt)
-    else:
-        return _call_openai(prompt)
+
+def _call_backend(backend: str, prompt: str) -> str:
+    """Dispatch to the right handler. Returns a response, _API_BLOCKED, or _CREDITS_EXHAUSTED."""
+    dispatch = {
+        "nvidia":     _call_nvidia,
+        "openai":     _call_openai,
+        "claude":     _call_claude,
+        "gemini":     _call_gemini,
+        "perplexity": _call_perplexity,
+        "grok":       _call_grok,
+        "ollama":     _call_ollama,
+    }
+    handler = dispatch.get(backend)
+    return handler(prompt) if handler else _API_BLOCKED
+
+
+def _route_call(prompt: str) -> str:
+    """
+    Route the prompt through an automatic fallback chain.
+
+    Order:
+      1. Configured primary backend (AI_BACKEND env var)
+      2. Any other backend with credentials set (in _FALLBACK_ORDER priority)
+      3. Ollama (local — always last resort before giving up)
+
+    A backend is skipped permanently within this session if it returns
+    _CREDITS_EXHAUSTED (401/402/403/429).  Content-filter errors (_API_BLOCKED)
+    are retried on the next backend because local Ollama won't filter content.
+
+    Always returns either a clean text string or _API_BLOCKED.
+    Never lets _CREDITS_EXHAUSTED or raw error payloads escape to callers.
+    """
+    global _active_backend
+    primary = os.environ.get("AI_BACKEND", AI_BACKEND).lower()
+
+    # Build chain: primary first, then fallbacks that have credentials
+    chain: list[str] = [primary]
+    for b in _FALLBACK_ORDER:
+        if b != primary and _has_credentials(b) and b not in chain:
+            chain.append(b)
+    # Ollama is always appended as the final local escape hatch
+    if "ollama" not in chain:
+        chain.append("ollama")
+
+    for backend in chain:
+        if backend in _exhausted_backends:
+            continue
+
+        result = _call_backend(backend, prompt)
+
+        if result == _CREDITS_EXHAUSTED:
+            # Permanently skip this backend for the rest of the session
+            _exhausted_backends.add(backend)
+            continue   # try next
+
+        if _is_api_error(result):
+            # Content filter or transient error — try the next backend.
+            # Local Ollama never content-filters, so it acts as the final escape.
+            continue
+
+        # Clean response
+        _active_backend = backend
+        return result
+
+    # Every backend failed or was skipped
+    return _API_BLOCKED
 
 
 def _call_openai(prompt: str) -> str:
-    """OpenAI GPT-4o-mini. Returns _API_BLOCKED on any error."""
+    """OpenAI GPT-4o-mini."""
     try:
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
         client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -307,17 +467,20 @@ def _call_openai(prompt: str) -> str:
             max_tokens=300,
         )
         return response.choices[0].message.content.strip()
-    except Exception:
-        # OpenAI SDK embeds full JSON in exception str — never surface it to users
+    except Exception as e:
+        # OpenAI SDK raises typed exceptions — check status if available
+        status = getattr(e, "status_code", None)
+        if status in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
         return _API_BLOCKED
 
 
 def _call_claude(prompt: str) -> str:
-    """Anthropic Claude. Returns _API_BLOCKED on content filter or any error."""
+    """Anthropic Claude (claude-3-haiku)."""
     try:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -333,8 +496,9 @@ def _call_claude(prompt: str) -> str:
             },
             timeout=60,
         )
-        # Catch content-filter / bad-request before raise_for_status
-        if response.status_code in (400, 422):
+        if response.status_code in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
         response.raise_for_status()
         return response.json()["content"][0]["text"].strip()
@@ -343,11 +507,11 @@ def _call_claude(prompt: str) -> str:
 
 
 def _call_gemini(prompt: str) -> str:
-    """Google Gemini. Returns _API_BLOCKED on content filter or any error."""
+    """Google Gemini 2.0 Flash."""
     try:
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
         url = (
             "https://generativelanguage.googleapis.com/v1beta"
             f"/models/gemini-2.0-flash:generateContent?key={api_key}"
@@ -357,7 +521,9 @@ def _call_gemini(prompt: str) -> str:
             json={"contents": [{"parts": [{"text": "You are a concise, expert recruitment analyst.\n\n" + prompt}]}]},
             timeout=60,
         )
-        if response.status_code in (400, 422):
+        if response.status_code in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
         response.raise_for_status()
         return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -366,11 +532,11 @@ def _call_gemini(prompt: str) -> str:
 
 
 def _call_perplexity(prompt: str) -> str:
-    """Perplexity AI. Returns _API_BLOCKED on content filter or any error."""
+    """Perplexity AI (sonar-small-chat)."""
     try:
         api_key = os.environ.get("PPLX_API_KEY", "")
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
         response = requests.post(
             "https://api.perplexity.ai/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -385,7 +551,9 @@ def _call_perplexity(prompt: str) -> str:
             },
             timeout=60,
         )
-        if response.status_code in (400, 422):
+        if response.status_code in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
@@ -394,11 +562,11 @@ def _call_perplexity(prompt: str) -> str:
 
 
 def _call_grok(prompt: str) -> str:
-    """xAI Grok. Returns _API_BLOCKED on content filter or any error."""
+    """xAI Grok (grok-beta)."""
     try:
         api_key = os.environ.get("GROK_API_KEY", "")
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
         response = requests.post(
             "https://api.x.ai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -413,7 +581,9 @@ def _call_grok(prompt: str) -> str:
             },
             timeout=60,
         )
-        if response.status_code in (400, 422):
+        if response.status_code in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
@@ -422,10 +592,14 @@ def _call_grok(prompt: str) -> str:
 
 
 def _call_nvidia_model(prompt: str, model: str, api_key: str) -> str:
-    """Generic NVIDIA NIM chat completion handler for any hosted model."""
+    """
+    Generic NVIDIA NIM chat completion handler.
+    Returns _API_BLOCKED on ANY error — content filter, rate limit, bad key,
+    or a 200 OK response whose body is an error object (NVIDIA sometimes does this).
+    """
     try:
         if not api_key:
-            return _API_BLOCKED
+            return _CREDITS_EXHAUSTED
 
         response = requests.post(
             "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -434,20 +608,39 @@ def _call_nvidia_model(prompt: str, model: str, api_key: str) -> str:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": "You are a concise, expert recruitment analyst."},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 300,
-                "temperature": 0.3
+                "temperature": 0.3,
             },
-            timeout=60
+            timeout=60,
         )
 
-        # Content filtering / bad request — return sentinel so callers fall back gracefully
-        if response.status_code == 400:
+        # Auth/quota errors → exhausted; content filter / bad request → blocked
+        if response.status_code in (401, 402, 403, 429):
+            return _CREDITS_EXHAUSTED
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
 
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+
+        body = response.json()
+
+        # Guard: some NVIDIA models return 200 OK but with an error body
+        # e.g. {"type":"error","error":{"type":"invalid_request_error",...}}
+        if isinstance(body, dict) and body.get("type") == "error":
+            return _API_BLOCKED
+
+        # Guard: content_filter finish_reason (model stopped mid-output)
+        choices = body.get("choices", [])
+        if not choices:
+            return _API_BLOCKED
+        if choices[0].get("finish_reason") == "content_filter":
+            return _API_BLOCKED
+
+        content = choices[0].get("message", {}).get("content", "")
+        return content.strip() if content else _API_BLOCKED
+
     except Exception:
         return _API_BLOCKED
 
@@ -480,7 +673,7 @@ def _call_ollama(prompt: str) -> str:
             },
             timeout=120,
         )
-        if response.status_code in (400, 422):
+        if 400 <= response.status_code < 500:
             return _API_BLOCKED
         response.raise_for_status()
         return response.json().get("response", _API_BLOCKED)

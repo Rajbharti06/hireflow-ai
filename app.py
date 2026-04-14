@@ -32,7 +32,8 @@ from skills_local import (
 from interview_gen import generate_interview_questions, format_questions_markdown, _detect_job_type
 from explainer import (
     generate_explanation, extract_skills_analysis,
-    get_llm_score, generate_cheap_explanation, AI_BACKEND
+    get_llm_score, generate_cheap_explanation, sanitize_explanation, AI_BACKEND,
+    get_ollama_models, get_backend_status, set_ollama_model, reset_backend_failures,
 )
 from utils import extract_candidate_name, get_initials
 from database import (
@@ -51,7 +52,11 @@ if "candidate_notes" not in st.session_state:
 if "blind_mode" not in st.session_state:
     st.session_state["blind_mode"] = False
 if "score_weights" not in st.session_state:
-    st.session_state["score_weights"] = (0.50, 0.30, 0.20)  # (embedding, skills, llm)
+    st.session_state["score_weights"] = (0.30, 0.55, 0.15)  # (embedding, skills, llm) — matches scorer.py defaults
+if "_last_active_backend" not in st.session_state:
+    st.session_state["_last_active_backend"] = ""
+if "_ollama_model" not in st.session_state:
+    st.session_state["_ollama_model"] = ""
 
 # ─── Restore Supabase session on every re-run ────────────────────────────────
 # The supabase client is a module-level singleton. Streamlit re-runs the script
@@ -652,8 +657,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Scoring Weights")
     st.caption("Must sum to 100%")
-    w_emb_pct = st.slider("🧠 Semantic", 10, 80, 50, step=5, help="Embedding cosine similarity")
-    w_skl_pct = st.slider("🔍 Skills", 5, 60, 30, step=5, help="Skill keyword overlap")
+    w_emb_pct = st.slider("🧠 Semantic", 10, 80, 30, step=5, help="Embedding cosine similarity")
+    w_skl_pct = st.slider("🔍 Skills", 5, 75, 55, step=5, help="Skill keyword overlap")
     w_llm_pct = 100 - w_emb_pct - w_skl_pct
     w_llm_pct = max(5, w_llm_pct)
     st.caption(f"⌨️ Keywords (auto): **{w_llm_pct}%**")
@@ -697,7 +702,76 @@ with st.sidebar:
         """, unsafe_allow_html=True)
     
     st.markdown("---")
-    
+
+    # ── AI Backend Status & Fallback ──
+    st.markdown("### 🌐 AI Backend")
+    _bs = get_backend_status()
+    _primary_label = _bs["primary"].upper()
+
+    # Toast when backend switches (detects change across reruns)
+    _current_active = _bs["active"]
+    if _current_active and _current_active != st.session_state["_last_active_backend"]:
+        if st.session_state["_last_active_backend"]:  # only toast on actual change, not first run
+            if _current_active == "ollama":
+                st.toast("🦙 API credits exhausted — now using Ollama locally", icon="⚠️")
+            else:
+                st.toast(f"✅ Switched to {_current_active.title()}", icon="🔄")
+        st.session_state["_last_active_backend"] = _current_active
+
+    # Exhausted backends — show warnings
+    for _eb in _bs["exhausted"]:
+        st.warning(f"⚠️ **{_eb.title()}** credits exhausted", icon="💳")
+
+    # Active backend badge
+    if _bs["using_fallback"]:
+        st.info(f"🔄 Fallback active → **{_bs['active'].title()}**")
+    else:
+        st.success(f"✅ **{_primary_label}** connected")
+
+    # Ollama model selector — shown when Ollama is primary OR is the active fallback
+    _show_ollama = (
+        _bs["primary"] == "ollama"
+        or _bs["using_ollama_fallback"]
+        or bool(_bs["exhausted"])   # pre-configure while credits are running out
+    )
+    if _show_ollama:
+        st.markdown("**🦙 Ollama Model**")
+        _ollama_models = _bs["ollama_models"]
+        if _ollama_models:
+            # Pre-select previously chosen model if still available
+            _prev = st.session_state.get("_ollama_model", "")
+            _default_idx = _ollama_models.index(_prev) if _prev in _ollama_models else 0
+            _chosen_model = st.selectbox(
+                "Select model",
+                _ollama_models,
+                index=_default_idx,
+                key="ollama_model_select",
+                label_visibility="collapsed",
+            )
+            if _chosen_model != st.session_state["_ollama_model"]:
+                st.session_state["_ollama_model"] = _chosen_model
+                set_ollama_model(_chosen_model)
+                st.toast(f"🦙 Ollama model set to {_chosen_model}", icon="✅")
+            else:
+                set_ollama_model(_chosen_model)  # keep module state in sync on every rerun
+        else:
+            st.error("Ollama not running", icon="🔴")
+            st.caption("Start it with `ollama serve`, then refresh this page.")
+            st.markdown(
+                "[📦 Get Ollama](https://ollama.com)",
+                unsafe_allow_html=False,
+            )
+
+    # Reset button — lets user retry after re-entering API keys
+    if _bs["exhausted"]:
+        if st.button("🔄 Retry API connections", use_container_width=True):
+            reset_backend_failures()
+            st.session_state["_last_active_backend"] = ""
+            st.toast("Retrying all backends…", icon="🔄")
+            st.rerun()
+
+    st.markdown("---")
+
     # ── Session History ──
     st.markdown("### 📂 History")
     sessions = get_sessions(limit=10)
@@ -713,6 +787,14 @@ with st.sidebar:
                 ):
                     old_results = get_results_for_session(session['id'])
                     if old_results:
+                        # Sanitize any stale error strings saved by older code versions
+                        for _r in old_results:
+                            _r["explanation"] = sanitize_explanation(
+                                _r.get("explanation", ""),
+                                score=_r.get("score", 50),
+                                skills_data=_r.get("skills"),
+                                experience_years=_r.get("experience_years", 0),
+                            )
                         st.session_state["results"] = old_results
                         st.session_state["view_mode"] = "history"
                         st.session_state["job_name"] = session["title"]
@@ -1052,7 +1134,7 @@ if "results" not in st.session_state or not st.session_state["results"]:
                     else:
                         l_score = compute_keyword_score(job_text, resume_text)
 
-                    _we, _ws, _wl = st.session_state.get("score_weights", (0.50, 0.30, 0.20))
+                    _we, _ws, _wl = st.session_state.get("score_weights", (0.30, 0.55, 0.15))
                     final_score = compute_hybrid_score(emb_score, s_score, l_score, _we, _ws, _wl)
 
                     # ── Explanation ──
