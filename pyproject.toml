@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hireflow-ai"
+version = "4.2.0"
+description = "AI-powered resume screener — screen 100+ candidates in seconds"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+hireflow = "hireflow_cli:main"
+
+[tool.setuptools]
+py-modules = ["hireflow_cli"]

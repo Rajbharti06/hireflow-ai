@@ -13,3 +13,4 @@ tmp_test_oauth.py
 
 # IDE / tooling
 .claude/
+*.egg-info/
