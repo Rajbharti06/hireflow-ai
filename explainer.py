@@ -20,6 +20,7 @@ Includes:
   - Cheap mode: skip LLM calls to save cost on large batches
 """
 
+import html as _html_mod
 import os
 import re
 import json
@@ -61,16 +62,31 @@ def _cache_key(job_desc: str, resume_text: str, prompt_type: str) -> str:
 def _is_api_error(text: str) -> bool:
     """
     Return True if the API response is an error, blocked sentinel, credits sentinel,
-    or a raw error payload that leaked through (e.g. old code stored the raw JSON body).
+    a raw error payload that leaked through, or HTML markup that was returned
+    instead of a plain-text explanation (some models occasionally do this).
     """
     if not isinstance(text, str) or not text.strip():
         return True
     if text in (_API_BLOCKED, _CREDITS_EXHAUSTED) or text.startswith("⚠️"):
         return True
-    # Detect raw API error JSON from Anthropic / OpenAI format that may have
-    # been cached or saved to the DB by older code versions.
     s = text.lstrip()
-    return s.startswith('{"type":"error"') or s.startswith('{"error":') or s.startswith("{'type': 'error'")
+    # Raw API error JSON (Anthropic / OpenAI format)
+    if s.startswith('{"type":"error"') or s.startswith('{"error":') or s.startswith("{'type': 'error'"):
+        return True
+    # HTML markup — model returned structured HTML instead of a plain explanation
+    if s.startswith("<div") or s.startswith("<html") or s.startswith("<p>"):
+        return True
+    return False
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML/XML tags and unescape HTML entities, leaving plain text."""
+    # Remove all tags
+    clean = re.sub(r"<[^>]+>", " ", text)
+    # Collapse whitespace
+    clean = re.sub(r"\s+", " ", clean).strip()
+    # Unescape entities like &amp; &lt; etc.
+    return _html_mod.unescape(clean)
 
 
 def _sanitize_text(text: str, max_chars: int = 2000) -> str:
@@ -105,6 +121,9 @@ def generate_explanation(job_desc: str, resume_text: str, score: float,
     # If the API was blocked or errored, fall back to the free local explanation
     if _is_api_error(result):
         result = generate_cheap_explanation(score, skills_data or {}, experience_years)
+    else:
+        # Strip any accidental HTML markup that some models return (e.g. Gemma)
+        result = _strip_html(result)
 
     _llm_cache[cache_k] = result
     return result

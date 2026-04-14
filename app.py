@@ -1483,22 +1483,23 @@ if "results" in st.session_state and st.session_state["results"]:
             meta_parts.append(f'<span style="background:rgba(110,118,129,0.1);border:1px solid rgba(110,118,129,0.2);border-radius:20px;padding:3px 10px;font-size:0.72rem;color:{t_color};font-weight:600;">{t_label}</span>')
             meta_html = f'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">{"".join(meta_parts)}</div>'
 
+            _bw_e, _bw_s, _bw_l = st.session_state.get("score_weights", (0.30, 0.55, 0.15))
             breakdown_html = f"""
             <div class="breakdown-container">
                 <div class="breakdown-item">
                     <div class="breakdown-label">Semantic</div>
                     <div class="breakdown-value" style="color:#818cf8;">{emb_s:.0f}</div>
-                    <div class="breakdown-weight">50% weight</div>
+                    <div class="breakdown-weight">{round(_bw_e*100)}% weight</div>
                 </div>
                 <div class="breakdown-item">
                     <div class="breakdown-label">Skills</div>
                     <div class="breakdown-value" style="color:#4ade80;">{skl_s:.0f}</div>
-                    <div class="breakdown-weight">30% weight</div>
+                    <div class="breakdown-weight">{round(_bw_s*100)}% weight</div>
                 </div>
                 <div class="breakdown-item">
                     <div class="breakdown-label">Keywords</div>
                     <div class="breakdown-value" style="color:#f59e0b;">{llm_s:.0f}</div>
-                    <div class="breakdown-weight">20% weight</div>
+                    <div class="breakdown-weight">{round(_bw_l*100)}% weight</div>
                 </div>
             </div>
             """
@@ -1558,45 +1559,40 @@ if "results" in st.session_state and st.session_state["results"]:
             expl_title = "AI Assessment"
             rank_class = f"rank-{absolute_rank}" if absolute_rank <= 3 else "rank-other"
 
-            st.markdown(f"""
-            <div class="result-card" style="border-left:3px solid {color};">
-                <div style="position:relative;">
-                    <div class="rank-badge {rank_class}">#{absolute_rank}</div>
-                </div>
-                <div class="candidate-header">
-                    <div class="candidate-avatar" style="background:linear-gradient(135deg,{color}88,{color}44);">{initials}</div>
-                    <div style="flex:1;">
-                        <p class="candidate-name">{display_name}{"&nbsp;<span class='blind-badge'>BLIND</span>" if _blind else ""}</p>
-                        <p class="candidate-file">{display_file}</p>
-                    </div>
-                </div>
-                {meta_html}
-                <div class="score-container">
-                    <div>
-                        <span class="score-number" style="color:{color};">{score}</span>
-                        <span class="score-out-of">/100</span>
-                    </div>
-                    <div style="display:flex;align-items:center;gap:10px;">
-                        <div class="score-label-text">{label}</div>
-                        <div style="font-size:0.72rem;font-weight:700;color:{confidence_color};
-                            background:{confidence_color}15;border:1px solid {confidence_color}44;
-                            border-radius:6px;padding:2px 8px;">
-                            {confidence_label} Confidence
-                        </div>
-                    </div>
-                </div>
-                <div class="score-bar-bg">
-                    <div class="score-bar-fill" style="width:{score}%;background:linear-gradient(90deg,{color},{color}66);"></div>
-                </div>
-                {breakdown_html}
-                {why_not_html}
-                <div class="explanation-box">
-                    <div class="explanation-title">{expl_title}</div>
-                    <div class="explanation-text">{r['explanation']}</div>
-                </div>
-                {skills_html}
-            </div>
-            """, unsafe_allow_html=True)
+            # Collapse blank lines in injected HTML blocks so Streamlit's
+            # CommonMark parser never exits the HTML block mid-card.
+            def _c(h: str) -> str:
+                import re as _re
+                return _re.sub(r"\n\s*\n", "\n", h).strip()
+
+            _card_html = (
+                f'<div class="result-card" style="border-left:3px solid {color};">'
+                f'<div style="position:relative;"><div class="rank-badge {rank_class}">#{absolute_rank}</div></div>'
+                f'<div class="candidate-header">'
+                f'<div class="candidate-avatar" style="background:linear-gradient(135deg,{color}88,{color}44);">{initials}</div>'
+                f'<div style="flex:1;">'
+                f'<p class="candidate-name">{display_name}{"&nbsp;<span class=blind-badge>BLIND</span>" if _blind else ""}</p>'
+                f'<p class="candidate-file">{display_file}</p>'
+                f'</div></div>'
+                f'{_c(meta_html)}'
+                f'<div class="score-container">'
+                f'<div><span class="score-number" style="color:{color};">{score}</span>'
+                f'<span class="score-out-of">/100</span></div>'
+                f'<div style="display:flex;align-items:center;gap:10px;">'
+                f'<div class="score-label-text">{label}</div>'
+                f'<div style="font-size:0.72rem;font-weight:700;color:{confidence_color};background:{confidence_color}15;border:1px solid {confidence_color}44;border-radius:6px;padding:2px 8px;">'
+                f'{confidence_label} Confidence</div></div></div>'
+                f'<div class="score-bar-bg"><div class="score-bar-fill" style="width:{score}%;background:linear-gradient(90deg,{color},{color}66);"></div></div>'
+                f'{_c(breakdown_html)}'
+                f'{_c(why_not_html)}'
+                f'<div class="explanation-box">'
+                f'<div class="explanation-title">{expl_title}</div>'
+                f'<div class="explanation-text">{r["explanation"]}</div>'
+                f'</div>'
+                f'{_c(skills_html)}'
+                f'</div>'
+            )
+            st.markdown(_card_html, unsafe_allow_html=True)
 
             # ── Pipeline Stage Selector ──
             _stage_options = [

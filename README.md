@@ -14,16 +14,41 @@ Works fully offline (Zero-Cost Mode) with a local ML model and no API key requir
 
 ---
 
-## Screenshots
+## Live Demo — Cyber Security Analyst Role
 
-### Sidebar — Scoring Weights & AI Backend Status
-![Sidebar — AI Backend](screenshots/04_features.png)
+> Real screening run: 1 JD + 3 candidate resumes, scored end-to-end with NVIDIA Gemma 4 31B.
+
+### Step 1 — Upload JD & Resumes, then click Analyze
+![Upload & Analyze](screenshots/ss_03_ready_to_screen.png)
+
+### Step 2 — Processing (AI scores all candidates in parallel)
+![Processing](screenshots/ss_04_processing.png)
+
+### Step 3 — Results Overview (ranked podium)
+![Results Overview](screenshots/ss_05_results_overview.png)
+
+| Rank | Candidate | Score | Confidence |
+|------|-----------|-------|------------|
+| 🥇 1 | EllaWhiteResume | **62.8** | Medium |
+| 🥈 2 | Cybersecurity Analyst 11495 | **57.4** | Low |
+| 🥉 3 | Cyber Security Analyst2 | **42.4** | Low |
+
+### Step 4 — Candidate Detail (AI explanation + score breakdown)
+![Candidate Detail](screenshots/ss_08_candidate_detail.png)
+
+### Step 5 — Analytics (score distribution, skills coverage, radar chart)
+![Analytics](screenshots/ss_10_analytics.png)
+
+---
+
+## UI Screenshots
+
+### Sidebar — Scoring Weights (30 / 55 / 15) + AI Backend Status
+![Sidebar Scoring Weights](screenshots/02_dashboard.png)
+![AI Backend Panel](screenshots/04_features.png)
 
 ### Feature Grid
-![HireFlow AI Feature Grid](screenshots/03_upload_panel.png)
-
-### Sidebar — Scoring Controls
-![Scoring Weights](screenshots/02_dashboard.png)
+![Feature Grid](screenshots/03_upload_panel.png)
 
 ---
 
@@ -85,13 +110,26 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and add your keys (see Configuration below)
 
-# 4. Run
-streamlit run app.py
+# 4. Install the global `hireflow` command
+pip install -e .
+
+# 5. Run from anywhere
+hireflow
 ```
 
-The app opens at `http://localhost:8501`.
+The app opens at `http://localhost:8501` with the browser launching automatically.
 
 **No API key?** Leave all LLM keys blank — the app falls back to Zero-Cost Mode using the local `all-MiniLM-L6-v2` sentence-transformer (~80 MB, downloaded on first run).
+
+### `hireflow` CLI options
+
+```bash
+hireflow                # start on :8501, opens browser
+hireflow --port 8502    # different port
+hireflow --no-browser   # headless / server use
+hireflow --stop         # kill running instance
+hireflow --help
+```
 
 ---
 
@@ -126,13 +164,13 @@ HireFlow AI supports multiple LLM providers and automatically falls back when on
 Primary (AI_BACKEND) → other configured providers → Ollama (local)
 ```
 
-- **Credit exhaustion** (401/402/403/429): backend is marked as dead for the session; next provider is tried automatically. A toast notification appears in the sidebar when a switch happens.
-- **Content filter** (400/422): falls back to the next backend immediately; Ollama never content-filters.
-- **Retry**: use the *Retry API connections* button in the sidebar after adding or refreshing an API key.
+- **Credit exhaustion** (401/402/403/429): backend is marked dead for the session; next provider is tried automatically. A toast appears in the sidebar when a switch happens.
+- **Content filter** (400/422): falls back to the next backend; Ollama never content-filters.
+- **Retry**: use the *Retry API connections* button in the sidebar after refreshing an API key.
 
 ### NVIDIA NIM (recommended)
 - Set `NVIDIA_API_KEY` in `.env` and `AI_BACKEND=nvidia`
-- Uses Gemma 4 31B for premium explanations and DeepSeek V3.2 for skills extraction
+- Uses Gemma 4 31B for explanations and DeepSeek V3.2 for skills extraction
 
 ### OpenAI
 - Set `OPENAI_API_KEY` in `.env`
@@ -141,13 +179,11 @@ Primary (AI_BACKEND) → other configured providers → Ollama (local)
 ### Ollama (free, local, private)
 - Install: [ollama.com](https://ollama.com)
 - Run: `ollama serve` then `ollama pull mistral`
-- Set `AI_BACKEND=ollama` or let the app fall back to it automatically
-- Select the active Ollama model from the sidebar dropdown
+- Select the active model from the sidebar dropdown
 
 ### Zero-Cost Mode (no API key)
 - Uses only the local sentence-transformer for semantic scoring
-- Skill scoring and rule-based explanations still run
-- LLM score defaults to neutral (50) — no API calls made
+- Rule-based explanations still run — no API calls made
 
 ---
 
@@ -165,6 +201,7 @@ Primary (AI_BACKEND) → other configured providers → Ollama (local)
 | `database.py` | Supabase persistence — sessions, results, history |
 | `supabase_client.py` | Supabase client setup (anon + service-role) |
 | `utils.py` | Shared helpers (name extraction, text truncation) |
+| `hireflow_cli.py` | Global `hireflow` CLI launcher — loads `.env`, uses project venv |
 
 ---
 
@@ -200,8 +237,15 @@ Row Level Security (RLS) is enforced on all tables. The service-role key (`SUPAB
 # Run with auto-reload
 streamlit run app.py
 
+# Or use the installed command
+hireflow
+
 # Generate sample PDFs for testing
 python generate_pdfs.py
+
+# Re-capture README screenshots
+python take_screenshots.py    # UI screenshots
+python demo_screenshots.py    # end-to-end demo with real PDFs
 ```
 
 ---
@@ -210,7 +254,7 @@ python generate_pdfs.py
 
 | Version | Highlights |
 |---------|-----------|
-| v4.2 | Automatic AI backend fallback chain, Ollama model selector in sidebar, `sanitize_explanation` for DB cleanup, updated default weights (Skills 55%) |
+| v4.2 | Auto AI backend fallback chain, Ollama model selector, `hireflow` CLI command, HTML-safe explanations, live weight labels in score breakdown |
 | v4.1 | Confidence levels, scoring rebalance, API hardening, security skills |
 | v4.0 | Supabase auth, service-role writes, advanced features |
 | v3.x | Pipeline board, blind mode, weight tuner, JD scan, radar charts |
