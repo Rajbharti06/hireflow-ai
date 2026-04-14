@@ -61,19 +61,27 @@ def _cache_key(job_desc: str, resume_text: str, prompt_type: str) -> str:
 
 def _is_api_error(text: str) -> bool:
     """
-    Return True if the API response is an error, blocked sentinel, credits sentinel,
-    a raw error payload that leaked through, or HTML markup that was returned
-    instead of a plain-text explanation (some models occasionally do this).
+    Return True if the text is an error sentinel, raw API error payload,
+    content-filter message, or HTML markup — anything that must NOT be
+    shown to users or stored as a candidate explanation.
     """
     if not isinstance(text, str) or not text.strip():
         return True
     if text in (_API_BLOCKED, _CREDITS_EXHAUSTED) or text.startswith("⚠️"):
         return True
     s = text.lstrip()
-    # Raw API error JSON (Anthropic / OpenAI format)
-    if s.startswith('{"type":"error"') or s.startswith('{"error":') or s.startswith("{'type': 'error'"):
+    # Raw API error JSON — Anthropic, OpenAI, NVIDIA formats
+    if (s.startswith('{"type":"error"') or s.startswith('{"error":')
+            or s.startswith("{'type': 'error'")):
         return True
-    # HTML markup — model returned structured HTML instead of a plain explanation
+    # Anthropic / generic "Output blocked" content-filter message that may
+    # have slipped through as a string rather than an HTTP 400 status.
+    tl = s.lower()
+    if ("output blocked" in tl or "content filtering" in tl
+            or "content_filter" in tl or "api error:" in tl
+            or "request_id" in tl):
+        return True
+    # HTML markup — some models return structured HTML instead of plain text
     if s.startswith("<div") or s.startswith("<html") or s.startswith("<p>"):
         return True
     return False
@@ -519,7 +527,8 @@ def _call_claude(prompt: str) -> str:
             return _CREDITS_EXHAUSTED
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
         return response.json()["content"][0]["text"].strip()
     except Exception:
         return _API_BLOCKED
@@ -544,7 +553,8 @@ def _call_gemini(prompt: str) -> str:
             return _CREDITS_EXHAUSTED
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
         return response.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return _API_BLOCKED
@@ -574,7 +584,8 @@ def _call_perplexity(prompt: str) -> str:
             return _CREDITS_EXHAUSTED
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
         return response.json()["choices"][0]["message"]["content"].strip()
     except Exception:
         return _API_BLOCKED
@@ -604,7 +615,8 @@ def _call_grok(prompt: str) -> str:
             return _CREDITS_EXHAUSTED
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
         return response.json()["choices"][0]["message"]["content"].strip()
     except Exception:
         return _API_BLOCKED
@@ -641,7 +653,8 @@ def _call_nvidia_model(prompt: str, model: str, api_key: str) -> str:
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
 
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
 
         body = response.json()
 
@@ -694,7 +707,8 @@ def _call_ollama(prompt: str) -> str:
         )
         if 400 <= response.status_code < 500:
             return _API_BLOCKED
-        response.raise_for_status()
+        if response.status_code >= 500:
+            return _API_BLOCKED
         return response.json().get("response", _API_BLOCKED)
     except Exception:
         return _API_BLOCKED

@@ -263,4 +263,14 @@ python demo_screenshots.py    # end-to-end demo with real PDFs
 
 ## License
 
-MIT
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+
+> ⚠️ If you use this code in a hosted service or SaaS product, you are required to open-source your entire codebase under the same license.
+
+See [LICENSE](LICENSE) for the full terms.
+
+## Commercial Use
+
+For commercial licensing or private use without the AGPL open-source obligation, please contact the author via GitHub.
+
+This project is open for community use under AGPL, with a commercial licensing path available for businesses.
